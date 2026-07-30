@@ -20,3 +20,6 @@ Copyright (c) 2026 Forensicator Files
   <img src="https://buymeacoffee.com" alt="Buy Me A Coffee" height="60" width="217">
 </a>
 
+
+[![BuyMeACoffee](https://raw.githubusercontent.com/pachadotdev/buymeacoffee-badges/main/bmc-black.svg)](https://www.buymeacoffee.com/forensicatorfiles)
+

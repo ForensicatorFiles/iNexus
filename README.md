@@ -2,7 +2,7 @@
 
 **One report, every location artifact.** iNexus correlates iOS location history (`Cache.sqlite`) with photos, app usage, messages, calls, contacts, and cross-app interactions into a single self-contained HTML forensic report — with an interactive map, timeline, and optional recovery of deleted rows straight from SQLite's freelist pages.
 
-Formerly released as *iOS Location Correlator*. See [`CHANGELOG.md`](CHANGELOG.md) for full version history, including the feature set carried over from that name.
+Formerly *iOS Location Correlator*. See [`CHANGELOG.md`](CHANGELOG.md) for full version history, including the feature set carried over from that name.
 
 ---
 

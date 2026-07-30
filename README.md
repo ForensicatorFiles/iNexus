@@ -15,3 +15,8 @@ Copyright (c) 2026 Forensicator Files
 
 
 [![Buy Me a Coffee](https://shields.io)](https://buymeacoffee.com/forensicatorfiles)
+
+<a href="https://buymeacoffee.com">
+  <img src="https://buymeacoffee.com" alt="Buy Me A Coffee" height="60" width="217">
+</a>
+

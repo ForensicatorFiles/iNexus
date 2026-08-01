@@ -8,9 +8,17 @@ need a bump. Full version history: see CHANGELOG.md.
 """
 
 TOOL_NAME    = "iNexus"
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.0.1"
 
 # ── Version history (see CHANGELOG.md for full detail) ─────────────────────────
+# 1.0.1  New: an ASCII-art banner (banner.py) now shows on -h and -version.
+#        Built entirely from the standard library (a raw string + str.center()
+#        — no figlet/pyfiglet/rich/colorama or any other dependency, and no
+#        ANSI color codes), so it renders identically everywhere, including
+#        older/restricted terminals and Windows' default console codepage.
+#        Does not appear on ordinary runs — main()'s existing plain
+#        "TOOL_NAME vX.Y.Z" startup line is unchanged, so scripted/automated
+#        invocations see no new noise.
 # 1.0.0  Rebranded from "iOS Location Correlator" to iNexus, version reset to
 #        mark this as the first public release under the new name. No
 #        functional change from iOS Location Correlator v1.3.0 — same

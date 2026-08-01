@@ -1,5 +1,5 @@
 """
-iNexus  (v1.0.0)
+iNexus  (v1.0.1)
 Correlates iOS location artifacts (Cache.sqlite location history, plus
 optional Cloud-V2.sqlite, knowledgeC.db app usage, sms.db, CallHistory.storedata,
 interactionC.db, AddressBook.sqlitedb, and Photos.sqlite media) into a

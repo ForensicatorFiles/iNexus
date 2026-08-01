@@ -73,6 +73,7 @@ from .constants import (
     DEFAULT_MIN_STAY_MINUTES,
 )
 from .utils import sha256_file, fmt_dt, fmt_dur
+from .banner import banner_text
 from .sqlite_forensics.walcopy import find_wal_shm, cleanup_all as _cleanup_wal_copies
 from .media import convert_dcim_heic, find_existing_jpeg_tree
 from .analysis import (
@@ -108,6 +109,22 @@ class _HelpFormatter(argparse.RawDescriptionHelpFormatter,
     pass
 
 
+class _VersionAction(argparse.Action):
+    """Replaces argparse's built-in action="version" so `-version` shows
+    the ASCII banner (see banner.py) above the version line, rather than
+    just a bare "TOOL vX.Y.Z" string. Same immediate-exit behavior as the
+    built-in action — this only changes what gets printed first."""
+    def __init__(self, option_strings, dest, **kwargs):
+        kwargs.setdefault("nargs", 0)
+        kwargs.setdefault("default", argparse.SUPPRESS)
+        kwargs.setdefault("help", "Show version information and exit.")
+        super().__init__(option_strings, dest, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        print(banner_text())
+        parser.exit()
+
+
 def parse_args():
     _para1 = textwrap.fill(
         "If a flag is omitted, the tool's built-in default is used and the "
@@ -124,6 +141,7 @@ def parse_args():
     p = argparse.ArgumentParser(
         prog="inexus.py",
         description=(
+            banner_text() + "\n\n"
             "Correlates Cache.sqlite location history (the primary,\n"
             "recommended source — not strictly required, see -cache's help\n"
             "below) with any combination of Photos.sqlite, Cloud-V2.sqlite,\n"
@@ -172,7 +190,7 @@ def parse_args():
                     help="Output HTML report path (flag form — safe to use in any "
                          "position; takes precedence over the positional output "
                          "argument if both are somehow given)")
-    p.add_argument("-version", action="version", version=f"{TOOL_NAME} v{TOOL_VERSION}")
+    p.add_argument("-version", action=_VersionAction)
 
     p.add_argument("-photos", default=None, metavar="PHOTOS_DB",
                     help="Optional path to Photos.sqlite. When provided, photo "

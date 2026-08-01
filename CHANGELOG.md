@@ -3,6 +3,32 @@
 All notable changes to iNexus (formerly "iOS Location Correlator") are
 documented here.
 
+## 1.0.1
+
+Added a plain-ASCII banner, shown on `-h` and `-version`:
+
+```
+ _  _   _
+(_)| \ | |  ___  __  __ _  _  ___
+| ||  \| | / _ \ \ \/ /| || |/ __|
+| || |\  ||  __/  >  < | |_| |\__ \
+|_||_| \_| \___| /_/\_\ \__,_||___/
+iOS Forensic Artifact & Location Correlator
+               v1.0.1
+```
+
+Built in a new `banner.py` module using nothing but the standard library —
+a raw triple-quoted string plus `str.center()`, no `figlet`/`pyfiglet`/
+`rich`/`colorama` or any other dependency, and no ANSI color codes — so it
+renders identically on any terminal this tool might run in, including
+older or restricted ones and Windows' default console codepage. `-h`'s
+existing detailed description/epilog/full-example text is unchanged below
+it. `-version` keeps its original immediate-exit behavior (via a small
+custom `argparse.Action`), just with the banner printed first. Ordinary
+report-generation runs are unaffected — `main()`'s existing plain
+`TOOL_NAME vX.Y.Z` startup line is unchanged, so scripted/automated
+invocations see no new output.
+
 ## 1.0.0 — Rebranded to iNexus
 
 Renamed from "iOS Location Correlator" to **iNexus**, and the version

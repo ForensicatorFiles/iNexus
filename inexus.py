@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-iNexus (v1.0.0) — thin backward-compatible entry point.
+iNexus (v1.0.1) — thin backward-compatible entry point.
 
 Keeps a plain `python3 inexus.py ...` invocation style working against the
 package. Prefer `python3 -m inexus ...` for anything new. All flags,

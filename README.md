@@ -1,5 +1,20 @@
 # iNexus
 
+```
+=============================================
+    _  _   _
+   (_)| \ | |  ___  __  __ _  _  ___
+   | ||  \| | / _ \ \ \/ /| || |/ __|
+   | || |\  ||  __/  >  < | |_| |\__ \
+   |_||_| \_| \___| /_/\_\ \__,_||___/
+---------------------------------------------
+iOS Forensic Artifact & Location Correlator
+                v1.0.0
+=============================================
+```
+
+TAGLINE = "iOS Forensic Artifact & Location Correlator"
+
 **One report, every location artifact.** iNexus correlates iOS location history (`Cache.sqlite`) with photos, app usage, messages, calls, contacts, and cross-app interactions into a single self-contained HTML forensic report — with an interactive map, timeline, and optional recovery of deleted rows straight from SQLite's freelist pages.
 
 Formerly *iOS Location Correlator*. See [`CHANGELOG.md`](CHANGELOG.md) for full version history, including the feature set carried over from that name.

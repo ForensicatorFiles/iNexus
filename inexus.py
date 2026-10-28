@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """
-iNexus (v1.0.1) — thin backward-compatible entry point.
+iNexus (v1.1.0) — thin backward-compatible entry point.
 
-Keeps a plain `python3 inexus.py ...` invocation style working against the
-package. Prefer `python3 -m inexus ...` for anything new. All flags,
+Launch without arguments to start the interactive desktop GUI:
+    python3 inexus.py
+
+Alternatively, keep a plain `python3 inexus.py ...` invocation style working 
+against the package. Prefer `python3 -m inexus ...` for CLI usage. All flags,
 behavior, and output are identical either way — this file only forwards to
 inexus.cli.main().
 
-FULL EXAMPLE — every optional source supplied at once:
+FULL CLI EXAMPLE — every optional source supplied at once:
 
     python3 inexus.py \
         -cache        Cache.sqlite \
-        -photos       Photos.sqlite \
+        -local        Local.sqlite \
         -cloud        Cloud-V2.sqlite \
+        -photos       Photos.sqlite \
+        -thumbnails   path/to/Thumbnails/V2 \
         -knowledgec   knowledgeC.db \
         -sms          sms.db \
         -calls        CallHistory.storedata \
         -addressbook  AddressBook.sqlitedb \
         -interactions interactionC.db \
         -output       report.html \
-        -case         2024-001 \
+        -case         2026-001 \
         -examiner     "J. Smith" \
         -notes        "Full extraction, all sources" \
         -radius 150 -visit 4 -window 120 -reject 500 -minstay 3 \

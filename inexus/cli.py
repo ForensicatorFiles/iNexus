@@ -1,68 +1,7 @@
 """
-Command-line entry point: argument parsing (parse_args()) and the run
-pipeline that wires every loader/analysis step together and writes the
-final self-contained HTML report (main()).
-
-WHAT THIS TOOL DOES
-    Every flag below is optional and additive — there is no single
-    required source. Cache.sqlite is the primary, recommended anchor
-    source (it's the only one with a raw GPS ping track, and it drives
-    automatic place/stay detection), but if it isn't available — not
-    recovered, or the device never had one — the tool still runs. Each
-    source you do supply gets correlated against whatever location data
-    exists the same way: matched to a detected Stay when possible, or an
-    interpolated GPS location otherwise. Supplying more sources adds more
-    report tabs and more per-stay detail.
-
-        -cache          Cache.sqlite               location history + GPS track (recommended anchor)
-        -photos         Photos.sqlite              photo/video assets + thumbnails
-        -cloud          Cloud-V2.sqlite            supplemental learned places/visits
-        -knowledgec     knowledgeC.db              app foreground/background usage
-        -sms            sms.db                     Messages (iMessage/SMS)
-        -calls          CallHistory.storedata       Phone/FaceTime/VoIP calls
-        -interactions   interactionC.db             cross-app interaction log (Siri donations)
-        -addressbook    AddressBook.sqlitedb        contact-name resolution for
-                                                     -sms/-calls/-interactions
-
-    REDUCED-FUNCTIONALITY MODE (no -cache)
-        Running without -cache still produces a complete report, but with
-        these tradeoffs:
-          • No GPS ping track on the map (Cache.sqlite is the only source
-            of raw pings).
-          • Automatic place/stay detection only happens if -cloud is
-            supplied instead — Cloud-V2.sqlite's own learned visits still
-            get clustered into stays on their own. With neither -cache
-            nor -cloud, the Places/Map views will show no stays at all.
-          • Photos keep only their own embedded EXIF GPS — there's no
-            ping stream left to interpolate a location for photos that
-            lack it.
-          • App sessions/messages/calls/interactions can still be matched
-            to Cloud-V2 stays if -cloud is supplied; otherwise they're
-            shown as unlocated rather than dropped.
-        main() prints an explicit notice at the start of any run missing
-        -cache, spelling out exactly which of the above apply that run.
-
-FULL EXAMPLE — every optional source supplied at once:
-
-    python3 -m inexus \\
-        -cache        Cache.sqlite \\
-        -photos       Photos.sqlite \\
-        -cloud        Cloud-V2.sqlite \\
-        -knowledgec   knowledgeC.db \\
-        -sms          sms.db \\
-        -calls        CallHistory.storedata \\
-        -addressbook  AddressBook.sqlitedb \\
-        -interactions interactionC.db \\
-        -output       report.html \\
-        -case         2024-001 \\
-        -examiner     "J. Smith" \\
-        -notes        "Full extraction, all sources" \\
-        -radius 150 -visit 4 -window 120 -reject 500 -minstay 3 \\
-        -convert-heic -dcim DCIM -jpeg-quality 85 \\
-        -recover-deleted
-
-Run `-h` for the full flag reference, including each tunable parameter's
-default and what it controls.
+Command-line and GUI entry point: argument parsing (parse_args()), GUI
+launcher handoff, and the run pipeline (run_pipeline()) that wires every
+loader/analysis step together and writes the final self-contained HTML report.
 """
 import argparse, os, sys, textwrap
 
@@ -83,6 +22,7 @@ from .analysis import (
 from .loaders.photos import load_photos
 from .loaders.addressbook import load_addressbook
 from .loaders.cache import load_cache
+from .loaders.local_db import load_local_db
 from .loaders.cloud_v2 import load_cloud_v2
 from .loaders.knowledgec import load_knowledgec
 from .loaders.sms import load_sms
@@ -101,19 +41,10 @@ from .report.builder import build_html
 
 class _HelpFormatter(argparse.RawDescriptionHelpFormatter,
                       argparse.ArgumentDefaultsHelpFormatter):
-    """Preserves the manual line breaks/indentation in description and
-    epilog (RawDescriptionHelpFormatter) while still appending each
-    argument's default value to its help text (ArgumentDefaultsHelpFormatter).
-    Plain ArgumentDefaultsHelpFormatter alone re-wraps the epilog into one
-    run-on paragraph, which mangles the worked examples below."""
     pass
 
 
 class _VersionAction(argparse.Action):
-    """Replaces argparse's built-in action="version" so `-version` shows
-    the ASCII banner (see banner.py) above the version line, rather than
-    just a bare "TOOL vX.Y.Z" string. Same immediate-exit behavior as the
-    built-in action — this only changes what gets printed first."""
     def __init__(self, option_strings, dest, **kwargs):
         kwargs.setdefault("nargs", 0)
         kwargs.setdefault("default", argparse.SUPPRESS)
@@ -133,240 +64,124 @@ def parse_args():
         "'MODIFIED FROM DEFAULT' flag so reviewers can immediately see what "
         "was tuned for this run.", width=78)
     _para2 = textwrap.fill(
-        "NOTE on argument order: if you're using any -flag (like -cloud or "
-        "-case) AND want to set a custom output filename, prefer -output "
-        "FILENAME over the positional output argument — argparse can "
-        "misparse 'cache.sqlite -cloud X report.html' (the positional "
-        "output after a flag gets dropped). Either of these is safe:", width=78)
+        "TIP: Run `python3 inexus.py` with no arguments (or `-gui`) to open "
+        "the interactive desktop GUI with file pickers and 1-click extraction "
+        "folder auto-discovery.", width=78)
     p = argparse.ArgumentParser(
         prog="inexus.py",
         description=(
             banner_text() + "\n\n"
-            "Correlates Cache.sqlite location history (the primary,\n"
-            "recommended source — not strictly required, see -cache's help\n"
-            "below) with any combination of Photos.sqlite, Cloud-V2.sqlite,\n"
+            "Correlates iOS location history across Cache.sqlite, Local.sqlite,\n"
+            "and/or Cloud-V2.sqlite with any combination of Photos.sqlite,\n"
             "knowledgeC.db, sms.db, CallHistory.storedata, AddressBook.sqlitedb,\n"
             "and interactionC.db into one self-contained, offline HTML\n"
-            "forensic report. Every source is additive: supplying more of\n"
-            "them adds more report tabs and more per-stay detail; supplying\n"
-            "none still produces a report, though without -cache or -cloud\n"
-            "no stays/places can be automatically detected.\n\n"
-            "FULL EXAMPLE — every optional source supplied at once:\n\n"
-            "  python3 -m inexus \\\n"
-            "      -cache        Cache.sqlite \\\n"
-            "      -photos       Photos.sqlite \\\n"
-            "      -cloud        Cloud-V2.sqlite \\\n"
-            "      -knowledgec   knowledgeC.db \\\n"
-            "      -sms          sms.db \\\n"
-            "      -calls        CallHistory.storedata \\\n"
-            "      -addressbook  AddressBook.sqlitedb \\\n"
-            "      -interactions interactionC.db \\\n"
-            "      -output       report.html \\\n"
-            "      -case         2024-001 \\\n"
-            "      -examiner     \"J. Smith\" \\\n"
-            "      -notes        \"Full extraction, all sources\" \\\n"
-            "      -radius 150 -visit 4 -window 120 -reject 500 -minstay 3 \\\n"
-            "      -convert-heic -dcim DCIM -jpeg-quality 85 \\\n"
-            "      -recover-deleted"
+            "forensic report.\n\n"
+            "Run with no arguments or pass `-gui` to launch the interactive GUI."
         ),
         formatter_class=_HelpFormatter,
-        epilog=(
-            _para1 + "\n\n" + _para2 + "\n"
-            "  ...Cache.sqlite report.html -cloud Cloud-V2.sqlite\n"
-            "  ...Cache.sqlite -cloud Cloud-V2.sqlite -output report.html"
-        ),
+        epilog=_para1 + "\n\n" + _para2,
     )
+    p.add_argument("-gui", "--gui", dest="gui", action="store_true",
+                    help="Launch the Tkinter graphical interface for selecting "
+                         "databases and tuning parameters interactively.")
     p.add_argument("-cache", dest="cache_db", default=None, metavar="CACHE_DB",
-                    help="Path to Cache.sqlite — the primary location-history "
-                         "source, and the only source that provides a raw GPS "
-                         "ping track. Recommended, but NOT required: if it "
-                         "isn't available (not recovered, or the device never "
-                         "had one), the tool still runs in reduced-"
-                         "functionality mode — see the module docstring "
-                         "('reduced-functionality mode') for exactly what's "
-                         "lost. -cloud can substitute for place/stay "
-                         "detection on its own if supplied.")
+                    help="Path to Cache.sqlite — high-frequency GPS ping track "
+                         "and short-term visit history.")
+    p.add_argument("-local", dest="local", default=None, metavar="LOCAL_DB",
+                    help="Optional path to Local.sqlite (routined). Provides "
+                         "long-term Significant Location / learned visits and "
+                         "transitions — ideal when the target date has rolled "
+                         "off Cache.sqlite or to corroborate stays.")
+    p.add_argument("-cloud", default=None, metavar="CLOUD_DB",
+                    help="Optional path to Cloud-V2.sqlite. Provides learned "
+                         "visits, place names/addresses, and transitions.")
     p.add_argument("-output", dest="output_flag", default=None, metavar="PATH",
-                    help="Output HTML report path (flag form — safe to use in any "
-                         "position; takes precedence over the positional output "
-                         "argument if both are somehow given)")
+                    help="Output HTML report path.")
     p.add_argument("-version", action=_VersionAction)
 
     p.add_argument("-photos", default=None, metavar="PHOTOS_DB",
-                    help="Optional path to Photos.sqlite. When provided, photo "
-                         "assets are correlated against the location data — "
-                         "matched to a detected Stay when possible, or an "
-                         "interpolated location from the ping stream otherwise. "
-                         "Adds a Photos tab and per-stay photo thumbnails. "
-                         "When omitted, the report focuses purely on the "
-                         "location/temporal datasets (Cache, Cloud-V2, "
-                         "knowledgeC, and any future sources).")
-    p.add_argument("-cloud", default=None, metavar="CLOUD_DB",
-                    help="Optional path to Cloud-V2.sqlite. When provided, its "
-                         "learned visits/places/transitions are merged with "
-                         "Cache.sqlite's data rather than replacing it — a stay "
-                         "recorded in both files is flagged as CORROBORATED, and "
-                         "Cloud-V2's human-readable place names/addresses are "
-                         "used to label stays wherever available.")
+                    help="Optional path to Photos.sqlite.")
     p.add_argument("-knowledgec", default=None, metavar="KNOWLEDGEC_DB",
-                    help="Optional path to knowledgeC.db. When provided, app "
-                         "foreground/background usage sessions ('/app/usage' "
-                         "stream) are correlated against the location data the "
-                         "same way photos are — each session gets matched to a "
-                         "detected Stay when possible, or an interpolated "
-                         "location from the ping stream otherwise. Adds an "
-                         "App Usage tab and a per-stay 'apps used here' list.")
-
+                    help="Optional path to knowledgeC.db.")
     p.add_argument("-sms", default=None, metavar="SMS_DB",
-                    help="Optional path to sms.db (the Messages app database). "
-                         "When provided, messages — including tapback "
-                         "reactions, attachment-only messages, and system/"
-                         "group-action events — are correlated against the "
-                         "location data the same way photos and app usage "
-                         "sessions are. Senders/recipients are shown as the "
-                         "raw phone number/email, or a name resolved via "
-                         "-addressbook when supplied. Adds a Messages tab "
-                         "and a per-stay 'messages sent/received here' list.")
-
+                    help="Optional path to sms.db.")
     p.add_argument("-calls", default=None, metavar="CALLHISTORY_DB",
-                    help="Optional path to CallHistory.storedata (the Phone/"
-                         "FaceTime call log, including third-party VoIP apps "
-                         "registered with CallKit — WhatsApp, Signal, "
-                         "Telegram, FaceTime, etc.). When provided, calls are "
-                         "correlated against the location data the same way "
-                         "messages and app usage sessions are, anchored on "
-                         "each call's midpoint so multi-minute calls aren't "
-                         "mis-located to their very first second. Callers are "
-                         "shown as the raw number, or the on-device cached "
-                         "name from CallHistory.storedata itself when "
-                         "present, or a name resolved via -addressbook when "
-                         "supplied. Adds a Calls tab and a per-stay 'calls "
-                         "made/received here' list.")
-
+                    help="Optional path to CallHistory.storedata.")
     p.add_argument("-addressbook", default=None, metavar="ADDRESSBOOK_DB",
-                    help="Optional path to AddressBook.sqlitedb (the Contacts "
-                         "database). When provided, raw phone numbers in "
-                         "Messages, Calls, and Interactions are resolved to "
-                         "contact names — phone numbers are matched after "
-                         "stripping punctuation/spacing/country-code "
-                         "differences (e.g. '+15828887553' and "
-                         "'(919) 888-7386' for the same underlying number "
-                         "both resolve), and emails are matched case-"
-                         "insensitively. The raw number/email is always kept "
-                         "and shown alongside the resolved name — this never "
-                         "replaces or hides the original artifact value, "
-                         "only labels it. Has no effect without -sms, "
-                         "-calls, and/or -interactions also supplied.")
-
+                    help="Optional path to AddressBook.sqlitedb.")
     p.add_argument("-interactions", default=None, metavar="INTERACTIONC_DB",
-                    help="Optional path to interactionC.db (CoreDuet's "
-                         "cross-app Interactions database — the donation log "
-                         "Siri uses for 'frequently contacted' predictions). "
-                         "Unlike -sms/-calls, which only cover Apple's native "
-                         "Messages and Phone/FaceTime, this captures activity "
-                         "from every app that donates interactions to Siri — "
-                         "Mail, Snapchat, Skype, Telegram, WhatsApp, Signal, "
-                         "Zoom, Teams, and more. Rows that DO overlap with "
-                         "native Messages/FaceTime/InCallService activity are "
-                         "still included (not deduplicated against -sms/"
-                         "-calls) but are flagged with an overlap badge in "
-                         "the UI. Adds an Interactions tab and a per-stay "
-                         "'app interactions here' list.")
+                    help="Optional path to interactionC.db.")
 
     p.add_argument("-radius", type=float, default=DEFAULT_CLUSTER_RADIUS_M,
                     metavar="METRES",
-                    help="Clustering radius: visits within this many metres of "
-                         "each other are considered the same place")
+                    help="Clustering radius in metres.")
     p.add_argument("-visit", type=float, default=DEFAULT_CLUSTER_TIME_GAP_HRS,
                     metavar="HOURS",
-                    help="Visit-merge gap: max hours between visits to the same "
-                         "location before they're treated as separate, distinct stays")
+                    help="Visit-merge gap in hours.")
     p.add_argument("-window", type=float, default=DEFAULT_INTERP_WINDOW_SECS,
                     metavar="SECONDS",
-                    help="GPS interpolation window: how many seconds forward/"
-                         "backward to search for a usable location ping when a "
-                         "photo has no embedded GPS")
+                    help="GPS interpolation window in seconds.")
     p.add_argument("-reject", type=float, default=DEFAULT_PLACE_GPS_REJECT_M,
                     metavar="METRES",
-                    help="Reject a time-window place match if the photo's own "
-                         "GPS is farther than this from the place centroid")
+                    help="Reject a time-window place match if photo GPS is farther than this.")
     p.add_argument("-minstay", type=float, default=DEFAULT_MIN_STAY_MINUTES,
                     metavar="MINUTES",
-                    help="Minimum visit duration to be considered a reportable stay")
+                    help="Minimum visit duration in minutes.")
 
     p.add_argument("-case", default=None, metavar="CASE_NUMBER",
-                    help="Case number to display in the report's integrity panel")
+                    help="Case number for the report's integrity panel.")
     p.add_argument("-examiner", default=None, metavar="NAME",
-                    help="Examiner name to display in the report's integrity panel")
+                    help="Examiner name for the report's integrity panel.")
     p.add_argument("-notes", default=None, metavar="TEXT",
-                    help="Free-text note to display in the report's integrity panel")
+                    help="Free-text note for the report's integrity panel.")
 
     p.add_argument("-convert-heic", dest="convert_heic", action="store_true",
-                    help="Before building the report, batch-convert every HEIC/HEIF "
-                         "image found under the DCIM folder into JPEGs, written to a "
-                         "separate parallel folder tree (the original DCIM is left "
-                         "untouched). The report then shows the JPEG preview for HEIC "
-                         "assets automatically. Requires the 'pillow-heif' package "
-                         "(pip install pillow-heif). DCIM is expected to sit in the "
-                         "same directory as the output report unless -dcim is given. "
-                         "If a matching JPEG tree from a previous run is found it is "
-                         "reused, and only newly-added images are converted (no full "
-                         "re-encode).")
+                    help="Batch-convert DCIM HEIC/HEIF images into JPEGs.")
     p.add_argument("-dcim", dest="dcim", default=None, metavar="PATH",
-                    help="Explicit path to the DCIM folder to convert (use with "
-                         "-convert-heic). Defaults to a 'DCIM' folder next to the "
-                         "output HTML report.")
+                    help="Explicit path to the DCIM folder.")
     p.add_argument("-jpeg-quality", dest="jpeg_quality", type=int, default=85,
                     metavar="N",
                     help="JPEG quality (1-100) for -convert-heic output.")
     p.add_argument("-recover-deleted", dest="recover_deleted", action="store_true",
-                    help="After normally loading each source supplied above, also scan "
-                         "that same file's SQLite freelist pages for deleted rows that "
-                         "haven't been overwritten yet (see sqlite_forensics/ for how). "
-                         "Recovered rows are shown in a separate 'RECOVERED DATA' report "
-                         "tab, clearly marked and never merged into the confirmed map/"
-                         "timeline/places views — a recovered row means a freed page "
-                         "still held old data when this ran, not confirmed live data. "
-                         "This is necessarily partial: only pages that happened to "
-                         "survive intact on the freelist are recoverable, so an empty "
-                         "or small result here does not mean nothing was ever deleted.")
+                    help="Scan SQLite freelist pages for deleted rows.")
+    p.add_argument("-carto-key", dest="carto_key", default=None, metavar="KEY",
+                    help="CARTO API key for map tiles. If omitted, the tool "
+                         "automatically looks for a 'carto_key.txt' file in "
+                         "the working directory.")
+    p.add_argument("-thumbnails", dest="thumbnails_dir", default=None, metavar="V2_PATH",
+                help="Optional path to the exported PhotoData/Thumbnails/V2 folder. "
+                     "When provided, the tool scans for cached thumbnails belonging "
+                     "to deleted or unindexed photos and adds them as recovered assets.")
 
     return p.parse_args()
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-def main():
-    """
-    The run pipeline, in order:
-      1. Hash every source file supplied (SHA-256), for the integrity panel.
-      2. Load Cache.sqlite (required) and merge in Cloud-V2.sqlite (optional).
-      3. Cluster visits into places (cluster_visits()), using -radius/-visit.
-      4. For each optional source supplied (-photos/-knowledgec/-sms/-calls/
-         -interactions), load it and correlate it against the places/ping
-         stream (correlate_app_sessions() / assign_photos_to_places()),
-         resolving contact names via -addressbook where applicable.
-      5. Build the self-contained HTML report (report.builder.build_html())
-         and write it to -output (or the positional output path, or the
-         default filename).
-    See parse_args() / `-h` for the full flag reference.
-    """
-    args = parse_args()
+def run_pipeline(args):
+    """Executes the full iNexus loading, correlation, and HTML report pipeline."""
     print(f"{TOOL_NAME} v{TOOL_VERSION}")
 
-    photos_path = args.photos
-    cache_path  = args.cache_db
-    cloud_path  = args.cloud
-    kc_path     = args.knowledgec
-    sms_path    = args.sms
-    calls_path  = args.calls
-    addressbook_path = args.addressbook
+    photos_path       = args.photos
+    cache_path        = args.cache_db
+    local_path        = getattr(args, "local", None)
+    cloud_path        = args.cloud
+    kc_path           = args.knowledgec
+    sms_path          = args.sms
+    calls_path        = args.calls
+    addressbook_path  = args.addressbook
     interactions_path = args.interactions
-    # -output flag takes precedence; fall back to the positional form;
-    # fall back to the tool's default filename if neither was given.
-    out_path = args.output_flag or "location_report.html"
+    out_path          = args.output_flag or "location_report.html"
 
-    # Surface the actual values used this run — defaults or overridden —
-    # so build_html() can disclose them transparently in the report.
+    # Load CARTO API key from argument or local carto_key.txt fallback
+    carto_api_key = getattr(args, "carto_key", None)
+    if not carto_api_key and os.path.exists("carto_key.txt"):
+        try:
+            with open("carto_key.txt", "r", encoding="utf-8") as f:
+                carto_api_key = f.read().strip()
+                if carto_api_key:
+                    print("[i] Loaded CARTO API key from carto_key.txt")
+        except Exception as e:
+            print(f"[!] Warning: could not read carto_key.txt: {e}")
+
     run_params = {
         "radius_m":           args.radius,
         "time_gap_hours":     args.visit,
@@ -376,10 +191,10 @@ def main():
     }
     overridden = []
     if args.radius  != DEFAULT_CLUSTER_RADIUS_M:     overridden.append(f"-radius={args.radius}m")
-    if args.visit    != DEFAULT_CLUSTER_TIME_GAP_HRS: overridden.append(f"-visit={args.visit}h")
+    if args.visit   != DEFAULT_CLUSTER_TIME_GAP_HRS: overridden.append(f"-visit={args.visit}h")
     if args.window  != DEFAULT_INTERP_WINDOW_SECS:   overridden.append(f"-window={args.window}s")
-    if args.reject   != DEFAULT_PLACE_GPS_REJECT_M:   overridden.append(f"-reject={args.reject}m")
-    if args.minstay  != DEFAULT_MIN_STAY_MINUTES:     overridden.append(f"-minstay={args.minstay}min")
+    if args.reject  != DEFAULT_PLACE_GPS_REJECT_M:   overridden.append(f"-reject={args.reject}m")
+    if args.minstay != DEFAULT_MIN_STAY_MINUTES:     overridden.append(f"-minstay={args.minstay}min")
 
     case_info = {
         "case_number": args.case,
@@ -387,27 +202,19 @@ def main():
         "notes":       args.notes,
     }
 
-    # Base steps: cache load, clustering, HTML generation, writing.
-    # Photos (load + assign + attach), Cloud-V2, knowledgeC, sms.db, and
-    # CallHistory.storedata each add steps only when supplied. AddressBook
-    # adds one lightweight lookup-table-build step when supplied — it's
-    # only useful alongside -sms/-calls, but is hashed/logged independently
-    # regardless, same as every other source.
     n_steps = 3
-    if cache_path:       n_steps += 1
-    if photos_path:      n_steps += 3
-    if cloud_path:        n_steps += 1
-    if kc_path:           n_steps += 2
-    if sms_path:           n_steps += 2
-    if calls_path:         n_steps += 2
-    if addressbook_path:    n_steps += 1
+    if cache_path:           n_steps += 1
+    if local_path:           n_steps += 1
+    if cloud_path:           n_steps += 1
+    if photos_path:          n_steps += 3
+    if kc_path:              n_steps += 2
+    if sms_path:             n_steps += 2
+    if calls_path:           n_steps += 2
+    if addressbook_path:     n_steps += 1
     if interactions_path:    n_steps += 2
     if args.recover_deleted: n_steps += 1
 
     def _hash_source(label, path, hash_key):
-        """Hashes `path`, prints it, and — if sibling -wal/-shm files exist —
-        hashes/prints those too and records a note for the integrity panel.
-        Returns the dict of hash values to merge into file_hashes."""
         h = sha256_file(path)
         print(f"      {label}: {h or '⚠ could not be computed'}")
         out = {hash_key: h}
@@ -427,14 +234,16 @@ def main():
         return out
 
     print("[0/{}] Computing source file hashes (SHA-256)…".format(n_steps))
-    wal_notes = []  # labels of sources where a sibling WAL/SHM was found and used
+    wal_notes = []
     file_hashes = {"cache_sha256": None}
     if cache_path:
         file_hashes.update(_hash_source("Cache.sqlite", cache_path, "cache_sha256"))
-    if photos_path:
-        file_hashes.update(_hash_source("Photos.sqlite", photos_path, "photos_sha256"))
+    if local_path:
+        file_hashes.update(_hash_source("Local.sqlite", local_path, "local_sha256"))
     if cloud_path:
         file_hashes.update(_hash_source("Cloud-V2.sqlite", cloud_path, "cloud_v2_sha256"))
+    if photos_path:
+        file_hashes.update(_hash_source("Photos.sqlite", photos_path, "photos_sha256"))
     if kc_path:
         file_hashes.update(_hash_source("knowledgeC.db", kc_path, "knowledgec_sha256"))
     if sms_path:
@@ -452,28 +261,24 @@ def main():
         print("[i] Using all default parameters")
 
     if not cache_path:
-        print("[!] No Cache.sqlite supplied — running in reduced-functionality mode:")
-        print("      • No GPS ping track will be drawn on the map (Cache.sqlite is the "
-              "only ping source)")
-        if cloud_path:
-            print("      • Places/stays will come only from Cloud-V2.sqlite's learned visits")
+        print("[!] No Cache.sqlite supplied — running without raw GPS ping stream:")
+        if local_path or cloud_path:
+            active_loc = [ name for name, p in [("Local.sqlite", local_path), ("Cloud-V2.sqlite", cloud_path)] if p ]
+            print(f"      • Places/stays will be built from {' + '.join(active_loc)}")
         else:
-            print("      • No automatic place/stay detection — Map/Places views will show "
-                  "no stays (supply -cloud to still get stays without Cache.sqlite)")
-        print("      • Photos keep only their own embedded EXIF GPS — no interpolation "
-              "fallback for photos without it")
-        if kc_path or sms_path or calls_path or interactions_path:
-            print("      • App sessions/messages/calls/interactions will show as unlocated "
-                  "unless -cloud is also supplied")
+            print("      • No location database supplied (-cache, -local, or -cloud) — "
+                  "Map/Places views will show no stays")
 
     step = 1
     photos = []
-    if photos_path:
-        print(f"[{step}/{n_steps}] Loading photos from {photos_path}…")
-        photos = load_photos(photos_path)
-        print(f"      {len(photos)} assets loaded")
+    if photos_path or getattr(args, "thumbnails_dir", None):
+        thumbnails_dir = getattr(args, "thumbnails_dir", None)
+        print(f"[{step}/{n_steps}] Loading photos (and V2 thumbnails) from {photos_path or 'thumbnails folder'}…")
+        photos = load_photos(photos_path, thumbnails_dir=thumbnails_dir)  # Passed here correctly
+        print(f"      {len(photos)} total assets loaded (including cached/orphaned thumbnails)")
         step += 1
 
+    cache_result = ([], [], [])
     if cache_path:
         print(f"[{step}/{n_steps}] Loading location cache from {cache_path}…")
         try:
@@ -484,26 +289,37 @@ def main():
         c_pings, c_visits, c_trips = cache_result
         print(f"      {len(c_pings)} GPS pings, {len(c_visits)} visits, {len(c_trips)} trip segments")
         step += 1
-    else:
-        cache_result = ([], [], [])
-        c_pings, c_visits, c_trips = cache_result
 
+    local_result = ([], [], [])
+    if local_path:
+        print(f"[{step}/{n_steps}] Loading learned location history from {local_path}…")
+        try:
+            local_result = load_local_db(local_path, min_stay_minutes=args.minstay)
+        except RuntimeError as e:
+            print(f"\n✗ ERROR: {e}")
+            sys.exit(1)
+        _, l_visits, l_trips = local_result
+        print(f"      {len(l_visits)} learned visits, {len(l_trips)} learned transitions "
+              f"({sum(1 for v in l_visits if v.get('place_name'))} with named places)")
+        step += 1
+
+    cloud_result = ([], [], [])
     if cloud_path:
-        print(f"[{step}/{n_steps}] Loading supplemental location data from {cloud_path}…")
+        print(f"[{step}/{n_steps}] Loading Cloud-V2 location data from {cloud_path}…")
         try:
             cloud_result = load_cloud_v2(cloud_path, min_stay_minutes=args.minstay)
         except RuntimeError as e:
             print(f"\n✗ ERROR: {e}")
             sys.exit(1)
-        cl_pings, cl_visits, cl_trips = cloud_result
+        _, cl_visits, cl_trips = cloud_result
         print(f"      {len(cl_visits)} learned visits, {len(cl_trips)} learned transitions "
               f"({sum(1 for v in cl_visits if v.get('place_name'))} with named places)")
-        pings, visits, trips = merge_location_sources(cache_result, cloud_result)
-        print(f"      Merged total: {len(pings)} pings, {len(visits)} visits "
-              f"({len(c_visits)} from Cache + {len(cl_visits)} from Cloud-V2), {len(trips)} trip/transition segments")
         step += 1
-    else:
-        pings, visits, trips = c_pings, c_visits, c_trips
+
+    pings, visits, trips = merge_location_sources(cache_result, local_result, cloud_result)
+    if sum(bool(x) for x in (cache_path, local_path, cloud_path)) > 1:
+        print(f"      Merged location total: {len(pings)} pings, {len(visits)} visits, "
+              f"{len(trips)} trip/transition segments")
 
     print(f"[{step}/{n_steps}] Clustering visits into places (radius={args.radius}m, "
           f"visit-gap={args.visit}h)…")
@@ -511,7 +327,7 @@ def main():
                              time_gap_secs=args.visit * 3600)
     n_corroborated = sum(1 for p in places if len(p.get("source_dbs", [])) > 1)
     print(f"      {len(places)} distinct stays detected"
-          + (f" ({n_corroborated} corroborated by both sources)" if cloud_path else ""))
+          + (f" ({n_corroborated} corroborated across multiple location databases)" if n_corroborated else ""))
     step += 1
 
     pings_sorted = sorted(pings, key=lambda p: p["ts"])
@@ -532,9 +348,6 @@ def main():
         places, unplaced = attach_photos_to_places(places, photos)
         step += 1
     else:
-        # No photos.sqlite supplied — still attach (a no-op against an empty
-        # photos list) so every place dict carries the "photos" key the
-        # report template expects.
         places, unplaced = attach_photos_to_places(places, photos)
 
     app_sessions = []
@@ -585,10 +398,6 @@ def main():
         step += 1
 
         print(f"[{step}/{n_steps}] Correlating messages to places/locations…")
-        # correlate_app_sessions() is generic over any list of dicts with
-        # start/end/place_id/lat/lng/location_method/location_accuracy keys —
-        # messages are instantaneous events (start==end==ts), so it applies
-        # unchanged rather than duplicating the same stay/interpolation logic.
         messages = correlate_app_sessions(messages, places, pings_sorted,
                                            gps_reject_m=args.reject,
                                            interp_window_secs=args.window)
@@ -614,10 +423,6 @@ def main():
         step += 1
 
         print(f"[{step}/{n_steps}] Correlating calls to places/locations…")
-        # Reused again (see messages above) — calls carry a real duration,
-        # so start/end span the call rather than being a single instant,
-        # and correlate_app_sessions() already anchors on the midpoint,
-        # which is the right behavior for a multi-minute call.
         calls = correlate_app_sessions(calls, places, pings_sorted,
                                         gps_reject_m=args.reject,
                                         interp_window_secs=args.window)
@@ -652,25 +457,20 @@ def main():
               f"{n_interp} got interpolated coordinates")
         step += 1
 
-    # Optional HEIC→JPEG batch conversion so the report can show previews for
-    # HEIC assets. Runs against the DCIM folder beside the report (or -dcim),
-    # writes a separate JPEG tree, and never touches the originals.
     heic_map = None
     if getattr(args, "convert_heic", False):
         out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
         dcim_path = args.dcim or os.path.join(out_dir, "DCIM")
         print(f"[heic] Scanning {dcim_path} for HEIC/HEIF images…")
 
-        # First, see if a previous run already produced a matching JPEG tree.
         existing, existing_map, einfo = find_existing_jpeg_tree(out_dir, dcim_path)
 
         if existing and einfo["missing"] == 0:
-            # Complete prior conversion — reuse it, encode nothing.
             heic_map = existing_map
             print(f"      Reusing existing {existing}/ "
                   f"({einfo['matched']}/{einfo['total_heic']} images already converted)")
         else:
-            target = existing if existing else None   # top up partial tree, else fresh
+            target = existing if existing else None
             if existing:
                 print(f"      Found {existing}/ with {einfo['matched']}/"
                       f"{einfo['total_heic']} already done — converting "
@@ -693,6 +493,10 @@ def main():
         if cache_path:
             recovered_data["cache"] = recover_cache(cache_path)
             print(f"      Cache.sqlite: {len(recovered_data['cache'])} candidate row(s) recovered")
+        if local_path:
+            # Local.sqlite shares the routined learned-visit schema with Cloud-V2
+            recovered_data["local"] = recover_cloud_v2(local_path)
+            print(f"      Local.sqlite: {len(recovered_data['local'])} candidate row(s) recovered")
         if photos_path:
             recovered_data["photos"] = recover_photos(photos_path)
             print(f"      Photos.sqlite: {len(recovered_data['photos'])} candidate row(s) recovered")
@@ -725,13 +529,14 @@ def main():
     html = build_html(photos, places, unplaced, pings_sorted, trips,
                        photos_path, cache_path,
                        run_params=run_params, file_hashes=file_hashes,
-                       case_info=case_info, cloud_db_path=cloud_path,
+                       case_info=case_info, cloud_db_path=cloud_path or local_path,
                        app_sessions=app_sessions, knowledgec_db_path=kc_path,
                        messages=messages, sms_db_path=sms_path,
                        calls=calls, calls_db_path=calls_path,
                        interactions=interactions, interactions_db_path=interactions_path,
                        addressbook_db_path=addressbook_path, heic_map=heic_map,
-                       wal_sources=wal_notes, recovered_data=recovered_data)
+                       wal_sources=wal_notes, recovered_data=recovered_data,
+                       carto_api_key=carto_api_key)
     step += 1
 
     print(f"[{step}/{n_steps}] Writing report…")
@@ -739,21 +544,24 @@ def main():
         f.write(html)
 
     print(f"\n✓ Report written to: {out_path} ({os.path.getsize(out_path)//1024} KB)")
-    if photos_path:
-        print(f"  SHA-256 Photos.sqlite: {file_hashes.get('photos_sha256') or 'N/A'}")
-    print(f"  SHA-256 Cache.sqlite:  {file_hashes.get('cache_sha256') or 'N/A'}")
+    if cache_path:
+        print(f"  SHA-256 Cache.sqlite:          {file_hashes.get('cache_sha256') or 'N/A'}")
+    if local_path:
+        print(f"  SHA-256 Local.sqlite:          {file_hashes.get('local_sha256') or 'N/A'}")
     if cloud_path:
-        print(f"  SHA-256 Cloud-V2.sqlite: {file_hashes.get('cloud_v2_sha256') or 'N/A'}")
+        print(f"  SHA-256 Cloud-V2.sqlite:       {file_hashes.get('cloud_v2_sha256') or 'N/A'}")
+    if photos_path:
+        print(f"  SHA-256 Photos.sqlite:         {file_hashes.get('photos_sha256') or 'N/A'}")
     if kc_path:
-        print(f"  SHA-256 knowledgeC.db: {file_hashes.get('knowledgec_sha256') or 'N/A'}")
+        print(f"  SHA-256 knowledgeC.db:         {file_hashes.get('knowledgec_sha256') or 'N/A'}")
     if sms_path:
-        print(f"  SHA-256 sms.db: {file_hashes.get('sms_sha256') or 'N/A'}")
+        print(f"  SHA-256 sms.db:                {file_hashes.get('sms_sha256') or 'N/A'}")
     if calls_path:
         print(f"  SHA-256 CallHistory.storedata: {file_hashes.get('calls_sha256') or 'N/A'}")
     if addressbook_path:
-        print(f"  SHA-256 AddressBook.sqlitedb: {file_hashes.get('addressbook_sha256') or 'N/A'}")
+        print(f"  SHA-256 AddressBook.sqlitedb:  {file_hashes.get('addressbook_sha256') or 'N/A'}")
     if interactions_path:
-        print(f"  SHA-256 interactionC.db: {file_hashes.get('interactions_sha256') or 'N/A'}")
+        print(f"  SHA-256 interactionC.db:       {file_hashes.get('interactions_sha256') or 'N/A'}")
     for p in places:
         n = len(p["photos"])
         src = "+".join(p.get("source_dbs", ["cache"]))
@@ -763,6 +571,23 @@ def main():
               f"({fmt_dur(p['duration'])})  lat={p['lat']:.4f} lng={p['lng']:.4f}  photos={n}")
 
     _cleanup_wal_copies()
+
+
+def main():
+    # If launched with no CLI arguments (e.g., `python3 inexus.py`), open the GUI
+    if len(sys.argv) == 1:
+        from .gui import launch_gui
+        launch_gui(run_pipeline)
+        return
+
+    args = parse_args()
+    if getattr(args, "gui", False):
+        from .gui import launch_gui
+        launch_gui(run_pipeline)
+        return
+
+    run_pipeline(args)
+
 
 if __name__ == "__main__":
     main()

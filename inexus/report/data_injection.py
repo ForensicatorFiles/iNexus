@@ -18,7 +18,7 @@ def build_data_injection(*, places_json, photos_json, track_json,
                           case_info, cache_db_path, file_hashes,
                           photos_db_path, cloud_db_path, knowledgec_db_path,
                           sms_db_path, calls_db_path, addressbook_db_path,
-                          interactions_db_path, run_params):
+                          interactions_db_path, run_params, carto_api_key=None):
     """Returns the JS `const ... = ...;` declarations (no <script> tags)."""
     file_hashes = file_hashes or {}
     case_info = case_info or {}
@@ -56,9 +56,10 @@ const APP_SESSIONS = {app_sessions_json};
 const MESSAGES = {messages_json};
 const CALLS = {calls_json};
 const INTERACTIONS = {interactions_json};
-const HEIC_MAP = {heic_map_json};   // {{ "<subpath>.heic": "<DCIM_jpg>/<subpath>.jpg" }} or {{}}
-const RECOVERED_POINTS = {recovered_points_json};   // [] unless -recover-deleted found coordinates
+const HEIC_MAP = {heic_map_json};
+const RECOVERED_POINTS = {recovered_points_json};
 const PINGS_START = {pings_ts_min or 'null'};
 const PINGS_END   = {pings_ts_max or 'null'};
 const REPORT_META = {report_meta};
+window.INEXUS_CARTO_KEY = {json.dumps(carto_api_key or "")};
 """

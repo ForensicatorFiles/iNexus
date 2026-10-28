@@ -28,18 +28,19 @@ let currentBasemap = 'dark';   // persists across main map + per-photo mini-maps
 let basemapTileLayer = null;   // the single active tile layer on the main map
 
 // ── Basemap definitions ──────────────────────────────────────────────────────
-// Multiple free, no-API-key tile providers so dot colors can be checked
-// against different backgrounds (dark / light / satellite / street).
+const _cartoKey = (typeof window.INEXUS_CARTO_KEY === 'string') ? window.INEXUS_CARTO_KEY.trim() : '';
+const _cartoParam = _cartoKey ? '?key=' + encodeURIComponent(_cartoKey) : '';
+
 const BASEMAPS = {
   dark: {
     label: 'Dark',
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png' + _cartoParam,
     attribution: '© OpenStreetMap contributors © CARTO',
     maxZoom: 20
   },
   light: {
     label: 'Light',
-    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png' + _cartoParam,
     attribution: '© OpenStreetMap contributors © CARTO',
     maxZoom: 20
   },
@@ -124,23 +125,67 @@ function fmtDur(sec) {
 function copyText(t) {
   navigator.clipboard.writeText(t).catch(() => {});
 }
+function expandMedia(src) {
+  if (src.startsWith('data:')) {
+    // Safely write the Base64 image into a new tab's document to bypass data URI navigation blocks
+    const win = window.open('');
+    if (win) {
+      win.document.write('<!DOCTYPE html><html><head><title>Thumbnail Preview</title></head><body style="margin:0;background:#0d1117;display:flex;align-items:center;justify-content:center;height:100vh;"><img src="' + src + '" style="max-width:100%;max-height:100%;"></body></html>');
+      win.document.close();
+    } else {
+      alert("Popup blocked! Please allow popups to view this thumbnail.");
+    }
+  } else {
+    window.open(src, '_blank');
+  }
+}
 // --- DCIM photo preview helpers -------------------------------------------
 // Build a report-relative URL to the asset by joining ZDIRECTORY/ZFILENAME and
 // percent-encoding each path segment (spaces, #, etc.) while keeping slashes.
 function relPath(p) {
   var f = p.directory ? p.directory + '/' + p.filename : p.filename;
-  if (!f) return '';
-  // Conversion map is keyed by the path under DCIM, so drop a leading "DCIM/".
-  var low = f.toLowerCase();
-  var key = (low.indexOf('dcim/') === 0) ? low.slice(5) : low;
-  var mapped = (typeof HEIC_MAP !== 'undefined' && HEIC_MAP) ? HEIC_MAP[key] : null;
-  var target = mapped || f;   // converted JPEG if we have one, else the original
-  return target.split('/').map(encodeURIComponent).join('/');
+  if (f && p.directory !== '__v2_thumbs__') {
+    var low = f.toLowerCase();
+    var key = (low.indexOf('dcim/') === 0) ? low.slice(5) : low;
+    var mapped = (typeof HEIC_MAP !== 'undefined' && HEIC_MAP) ? HEIC_MAP[key] : null;
+    var target = mapped || f;   // converted JPEG if we have one, else the original DCIM path
+    
+    // If it's a standard live asset, check if it's not a V2 orphan, or use the normal path
+    if (!p.is_thumbnail_orphan) {
+      return target.split('/').map(encodeURIComponent).join('/');
+    }
+  }
+
+  // Fallback to V2 thumbnail data URI only if normal version is absent/orphan
+  if (p.thumbnail_data_uri) {
+    return p.thumbnail_data_uri;
+  }
+
+  return f ? f.split('/').map(encodeURIComponent).join('/') : '';
 }
 // onerror handler: the file isn't beside the report, or the browser can't
-// decode the format (e.g. HEIC). Swap the broken media for a hint + open link.
+// decode the format (e.g. HEIC/HEVC). If a V2 thumbnail is available, swap to it!
 function ppFail(id) {
-  var m = document.getElementById('pp-media-' + id);
+  var m = document.getElementById('pp-media-' + id) || document.getElementById('tl-media-' + id);
+  var p = PHOTOS.find(x => x.id === id);
+
+  if (m && p && p.thumbnail_data_uri && m.src !== p.thumbnail_data_uri) {
+    if (m.tagName.toLowerCase() === 'video') {
+      // Browsers cannot render a JPEG inside a <video> tag's src. 
+      // Replace the video element entirely with a standard <img> tag.
+      var img = document.createElement('img');
+      img.id = m.id;
+      img.src = p.thumbnail_data_uri;
+      img.style.cssText = m.style.cssText;
+      img.style.cursor = 'zoom-in';
+      img.onclick = function() { expandMedia(img.src); };
+      m.parentNode.replaceChild(img, m);
+    } else {
+      m.src = p.thumbnail_data_uri;
+    }
+    return;
+  }
+
   if (m) m.style.display = 'none';
   var miss = document.getElementById('pp-miss-' + id);
   if (miss) miss.style.display = 'block';
@@ -947,7 +992,9 @@ function exportStayReport(id) {
 }
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
-let timelineActiveTypes = new Set(['stay', 'photo', 'message', 'call']);   // interaction starts off — see toggleTimelineType
+let timelineActiveTypes = new Set(['stay', 'photo', 'message', 'call']);
+let currentTimelineEvents = [];
+let selectedTimelineIdx = null;
 
 function toggleTimelineType(type, btn) {
   if (timelineActiveTypes.has(type)) {
@@ -964,25 +1011,16 @@ function buildTimeline() {
   const wrap = document.getElementById('timeline-wrap');
   if (!wrap) return;
 
-  // Build event list: places + photos outside places + messages/calls/interactions
   const events = [];
-
   if (timelineActiveTypes.has('stay')) {
-    PLACES.forEach(p => {
-      events.push({type:'stay', ts: p.entry, end: p.exit, data: p});
-    });
+    PLACES.forEach(p => events.push({type:'stay', ts: p.entry, end: p.exit, data: p}));
   }
   if (timelineActiveTypes.has('photo')) {
-    PLACES.forEach(p => {
-      p.photo_ids.forEach(pid => {
-        const ph = PHOTOS.find(x=>x.id===pid);
-        if(ph) events.push({type:'photo', ts: ph.ts, data: ph});
-      });
-    });
-    // Unplaced photos
-    PHOTOS.filter(p => !p.place_id).forEach(p => {
-      events.push({type:'photo', ts: p.ts, data: p});
-    });
+    PLACES.forEach(p => p.photo_ids.forEach(pid => {
+      const ph = PHOTOS.find(x=>x.id===pid);
+      if(ph) events.push({type:'photo', ts: ph.ts, data: ph});
+    }));
+    PHOTOS.filter(p => !p.place_id).forEach(p => events.push({type:'photo', ts: p.ts, data: p}));
   }
   if (timelineActiveTypes.has('message')) {
     MESSAGES.forEach(m => events.push({type:'message', ts: m.ts, data: m}));
@@ -994,7 +1032,10 @@ function buildTimeline() {
     INTERACTIONS.forEach(i => events.push({type:'interaction', ts: i.ts, data: i}));
   }
 
+  // Sort flat and assign strict index
   events.sort((a,b)=>(a.ts||0)-(b.ts||0));
+  events.forEach((e, i) => e._tl_idx = i);
+  currentTimelineEvents = events;
 
   // Group by UTC day
   const days = {};
@@ -1009,32 +1050,25 @@ function buildTimeline() {
     html += `<div class="tl-day"><div class="tl-day-head">${day} <span style="color:var(--dim);font-weight:normal">(${evts.length} events)</span></div>`;
     evts.forEach((e,i) => {
       const isLast = i===evts.length-1;
+      const selClass = selectedTimelineIdx === e._tl_idx ? ' selected' : '';
+      const rowId = `tl-row-${e._tl_idx}`;
+      const onClick = `onclick="selectTimelineEvent(${e._tl_idx})"`;
+
       if (e.type==='stay') {
-        html += `<div class="tl-event">
-          <div class="tl-line">
-            <div class="tl-dot stay"></div>
-            ${isLast?'':'<div class="tl-connector"></div>'}
-          </div>
+        html += `<div class="tl-event${selClass}" id="${rowId}" ${onClick}>
+          <div class="tl-line"><div class="tl-dot stay"></div>${isLast?'':'<div class="tl-connector"></div>'}</div>
           <div class="tl-body">
             <div class="tl-time">${fmtTs(e.ts)}</div>
-            <div class="tl-label" style="color:var(--accent)">📍 <a href="#" onclick="goToPlace(${e.data.id});return false" style="color:var(--accent)">Stay #${e.data.id}</a>
-              <span id="tl-gc-${e.data.id}" style="color:var(--dim);font-size:9px"> — loading…</span>
-            </div>
-            <div class="tl-meta">Duration: ${fmtDur(e.data.duration)} · ${e.data.n_photos > 0
-              ? `<a href="#" onclick="goToPlace(${e.data.id});return false" style="color:var(--accent)">${e.data.n_photos} photo(s) →</a>`
-              : '0 photos'}</div>
+            <div class="tl-label" style="color:var(--accent)">📍 Stay #${e.data.id} <span id="tl-gc-${e.data.id}" style="color:var(--dim);font-size:9px"> — loading…</span></div>
+            <div class="tl-meta">Duration: ${fmtDur(e.data.duration)} · ${e.data.n_photos > 0 ? e.data.n_photos + ' photo(s)' : '0 photos'}</div>
           </div>
         </div>`;
-        // Queue geocode (deduped/throttled — see resolvePlace)
         resolvePlace(e.data);
       } else if (e.type==='photo') {
         const ph = e.data;
         const locStr = ph.lat ? `${ph.lat.toFixed(4)}, ${ph.lng.toFixed(4)}` : 'no location';
-        html += `<div class="tl-event">
-          <div class="tl-line">
-            <div class="tl-dot photo"></div>
-            ${isLast?'':'<div class="tl-connector"></div>'}
-          </div>
+        html += `<div class="tl-event${selClass}" id="${rowId}" ${onClick}>
+          <div class="tl-line"><div class="tl-dot photo"></div>${isLast?'':'<div class="tl-connector"></div>'}</div>
           <div class="tl-body">
             <div class="tl-time">${fmtTs(e.ts)}</div>
             <div class="tl-label">📷 ${esc(ph.filename)} ${ph.trashed?'<span class="trash-pill">TRASH</span>':''}</div>
@@ -1043,40 +1077,31 @@ function buildTimeline() {
         </div>`;
       } else if (e.type==='message') {
         const m = e.data;
-        html += `<div class="tl-event">
-          <div class="tl-line">
-            <div class="tl-dot message"></div>
-            ${isLast?'':'<div class="tl-connector"></div>'}
-          </div>
+        html += `<div class="tl-event${selClass}" id="${rowId}" ${onClick}>
+          <div class="tl-line"><div class="tl-dot message"></div>${isLast?'':'<div class="tl-connector"></div>'}</div>
           <div class="tl-body">
             <div class="tl-time">${fmtTs(e.ts)}</div>
-            <div class="tl-label">💬 <a href="#" onclick="goToMessage(${m.id});return false" style="color:#d99a4a">${m.is_from_me?'→ ':'← '}${esc(m.is_from_me ? (m.chat_name||m.sender) : m.sender)}</a></div>
+            <div class="tl-label">💬 <span style="color:#d99a4a">${m.is_from_me?'→ ':'← '}${esc(m.is_from_me ? (m.chat_name||m.sender) : m.sender)}</span></div>
             <div class="tl-meta">${messagePill(m)} ${esc((m.display_text||'').slice(0,70))} ${m.place_id!=null?'· Stay #'+m.place_id:''}</div>
           </div>
         </div>`;
       } else if (e.type==='call') {
         const c = e.data;
-        html += `<div class="tl-event">
-          <div class="tl-line">
-            <div class="tl-dot call"></div>
-            ${isLast?'':'<div class="tl-connector"></div>'}
-          </div>
+        html += `<div class="tl-event${selClass}" id="${rowId}" ${onClick}>
+          <div class="tl-line"><div class="tl-dot call"></div>${isLast?'':'<div class="tl-connector"></div>'}</div>
           <div class="tl-body">
             <div class="tl-time">${fmtTs(e.ts)}</div>
-            <div class="tl-label">📞 <a href="#" onclick="goToCall(${c.id});return false" style="color:#4ad97a">${c.direction==='Outgoing'?'→ ':'← '}${esc(c.caller)}</a></div>
+            <div class="tl-label">📞 <span style="color:#4ad97a">${c.direction==='Outgoing'?'→ ':'← '}${esc(c.caller)}</span></div>
             <div class="tl-meta">${callStatusPill(c)} ${esc(c.call_type_label)} · ${c.duration>0?fmtDur(c.duration):'0:00'} ${c.place_id!=null?'· Stay #'+c.place_id:''}</div>
           </div>
         </div>`;
       } else if (e.type==='interaction') {
         const it = e.data;
-        html += `<div class="tl-event">
-          <div class="tl-line">
-            <div class="tl-dot interaction"></div>
-            ${isLast?'':'<div class="tl-connector"></div>'}
-          </div>
+        html += `<div class="tl-event${selClass}" id="${rowId}" ${onClick}>
+          <div class="tl-line"><div class="tl-dot interaction"></div>${isLast?'':'<div class="tl-connector"></div>'}</div>
           <div class="tl-body">
             <div class="tl-time">${fmtTs(e.ts)}</div>
-            <div class="tl-label">🔄 <a href="#" onclick="goToInteraction(${it.id});return false" style="color:#9a6ad9">${it.direction==='Outgoing'?'→ ':'← '}${esc(it.counterpart)}</a> ${overlapBadge(it)}</div>
+            <div class="tl-label">🔄 <span style="color:#9a6ad9">${it.direction==='Outgoing'?'→ ':'← '}${esc(it.counterpart)}</span> ${overlapBadge(it)}</div>
             <div class="tl-meta">${interactionAppPill(it)} ${it.place_id!=null?'· Stay #'+it.place_id:''}</div>
           </div>
         </div>`;
@@ -1086,6 +1111,121 @@ function buildTimeline() {
   });
 
   wrap.innerHTML = html || '<div style="color:var(--dim);padding:20px">No timeline data for the selected event types.</div>';
+}
+
+function selectTimelineEvent(idx) {
+  selectedTimelineIdx = idx;
+  document.querySelectorAll('.tl-event').forEach(el => el.classList.remove('selected'));
+  const rowEl = document.getElementById('tl-row-' + idx);
+  if (rowEl) rowEl.classList.add('selected');
+
+  const e = currentTimelineEvents[idx];
+  if (!e) return;
+  const det = document.getElementById('timeline-detail');
+  const row = (lbl, val) => `<tr><td style="color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
+
+  let html = '';
+
+  if (e.type === 'stay') {
+    const p = e.data;
+    html = `
+      <div class="dp-title">Stay #${p.id}</div>
+      <div class="dp-sub" id="tl-det-gc-${idx}">Loading location…</div>
+      <div class="section-head">TIMING</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse">
+        ${row('ARRIVED', fmtTs(p.entry))}
+        ${row('DEPARTED', fmtTs(p.exit))}
+        ${row('DURATION', fmtDur(p.duration))}
+      </table>
+      <div class="section-head">LOCATION</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse">
+        ${row('COORDINATES', `<a href="https://www.google.com/maps?q=${p.lat},${p.lng}" target="_blank" class="coord-link">${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</a>`)}
+      </table>
+      <div style="margin-top:20px; text-align:center">
+         <button class="copy-btn" style="padding:8px 16px; font-size:10px" onclick="goToPlace(${p.id})">View Full Details in Places Tab ↗</button>
+      </div>
+    `;
+    resolvePlace(p);
+    geocode(p.lat, p.lng, lbl => {
+       const el = document.getElementById('tl-det-gc-'+idx);
+       if (el) el.textContent = lbl;
+    });
+
+  } else if (e.type === 'photo') {
+    const p = e.data;
+    html = `
+      <div class="dp-title">${esc(p.filename)} ${p.trashed?'<span class="trash-pill">TRASH</span>':''}</div>
+      <div class="dp-sub" id="tl-det-gc-${idx}">${p.lat&&p.lat!==0?'Loading location…':'No coordinates'}</div>
+      <div class="section-head">PREVIEW</div>
+      <div class="photo-preview" style="margin-top:4px">
+        ${(p.kind===1)
+          ? `<video id="tl-media-${p.id}" src="${relPath(p)}" ${p.thumbnail_data_uri ? `poster="${p.thumbnail_data_uri}"` : ''} controls preload="metadata" onerror="ppFail(${p.id})" style="max-width:100%;max-height:340px;display:block;border:1px solid var(--border);border-radius:2px"></video>`
+          : `<img id="tl-media-${p.id}" src="${relPath(p)}" loading="lazy" alt="${esc(p.filename)}" onerror="ppFail(${p.id})" onclick="expandMedia(this.src)" style="max-width:100%;max-height:340px;display:block;border:1px solid var(--border);border-radius:2px;cursor:zoom-in">`}
+         <div id="tl-miss-${p.id}" style="display:none;font-size:10px;color:var(--dim);border:1px dashed var(--border);border-radius:2px;padding:10px;text-align:center;line-height:1.5">
+           Preview unavailable.<br><span style="font-family:monospace;font-size:9px;color:var(--dim)">${esc(p.directory ? p.directory+'/'+p.filename : p.filename)}</span>
+         </div>
+      </div>
+      <div class="section-head">METADATA</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse">
+        ${row('TIMESTAMP', fmtTs(p.ts))}
+        ${row('METHOD', methodPill(p.method))}
+      </table>
+      <div style="margin-top:20px; text-align:center">
+         <button class="copy-btn" style="padding:8px 16px; font-size:10px" onclick="goToPhoto(${p.id})">View Full Details in Photos Tab ↗</button>
+      </div>
+    `;
+    if (p.lat && p.lat!==0) {
+      geocode(p.lat, p.lng, lbl => {
+        const el = document.getElementById('tl-det-gc-'+idx);
+        if(el) el.textContent = lbl;
+      });
+    }
+
+  } else if (e.type === 'message') {
+    const m = e.data;
+    html = `
+      <div class="dp-title">${m.is_from_me?'To: ':'From: '}${esc(m.is_from_me ? (m.chat_name||m.sender) : m.sender)}</div>
+      <div class="section-head">MESSAGE</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse">
+        ${row('TEXT', `<div style="white-space:pre-wrap;word-break:break-word">${esc(m.display_text)}</div>`)}
+        ${row('TIME', fmtTs(m.ts))}
+        ${row('CHANNEL', messagePill(m))}
+      </table>
+      <div style="margin-top:20px; text-align:center">
+         <button class="copy-btn" style="padding:8px 16px; font-size:10px" onclick="goToMessage(${m.id})">View Full Details in Messages Tab ↗</button>
+      </div>
+    `;
+  } else if (e.type === 'call') {
+    const c = e.data;
+    html = `
+      <div class="dp-title">${c.direction==='Outgoing'?'To: ':'From: '}${esc(c.caller)}</div>
+      <div class="section-head">CALL</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse">
+        ${row('TIME', fmtTs(c.ts))}
+        ${row('DURATION', c.duration>0?fmtDur(c.duration):'0:00')}
+        ${row('STATUS', callStatusPill(c))}
+        ${row('TYPE', esc(c.call_type_label))}
+      </table>
+      <div style="margin-top:20px; text-align:center">
+         <button class="copy-btn" style="padding:8px 16px; font-size:10px" onclick="goToCall(${c.id})">View Full Details in Calls Tab ↗</button>
+      </div>
+    `;
+  } else if (e.type === 'interaction') {
+    const i = e.data;
+    html = `
+      <div class="dp-title">${i.direction==='Outgoing'?'To: ':'From: '}${esc(i.counterpart)}</div>
+      <div class="section-head">INTERACTION</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse">
+        ${row('TIME', fmtTs(i.ts))}
+        ${row('APP', interactionAppPill(i))}
+      </table>
+      <div style="margin-top:20px; text-align:center">
+         <button class="copy-btn" style="padding:8px 16px; font-size:10px" onclick="goToInteraction(${i.id})">View Full Details in Interactions Tab ↗</button>
+      </div>
+    `;
+  }
+
+  det.innerHTML = html;
 }
 
 // ── Photos tab ────────────────────────────────────────────────────────────────
@@ -1152,13 +1292,13 @@ function selectPhoto(id) {
     <div class="section-head">PREVIEW</div>
     <div class="photo-preview" style="margin-top:4px">
       ${(p.kind===1)
-        ? `<video id="pp-media-${id}" src="${relPath(p)}" controls preload="metadata" onerror="ppFail(${id})" style="max-width:100%;max-height:340px;display:block;border:1px solid var(--border);border-radius:2px"></video>`
-        : `<img id="pp-media-${id}" src="${relPath(p)}" loading="lazy" alt="${esc(p.filename)}" onerror="ppFail(${id})" onclick="window.open(this.src,'_blank')" style="max-width:100%;max-height:340px;display:block;border:1px solid var(--border);border-radius:2px;cursor:zoom-in">`}
+        ? `<video id="pp-media-${id}" src="${relPath(p)}" ${p.thumbnail_data_uri ? `poster="${p.thumbnail_data_uri}"` : ''} controls preload="metadata" onerror="ppFail(${id})" style="max-width:100%;max-height:340px;display:block;border:1px solid var(--border);border-radius:2px"></video>`
+        : `<img id="pp-media-${id}" src="${relPath(p)}" loading="lazy" alt="${esc(p.filename)}" onerror="ppFail(${id})" onclick="expandMedia(this.src)" style="max-width:100%;max-height:340px;display:block;border:1px solid var(--border);border-radius:2px;cursor:zoom-in">`}
       <div id="pp-miss-${id}" style="display:none;font-size:10px;color:var(--dim);border:1px dashed var(--border);border-radius:2px;padding:10px;text-align:center;line-height:1.5">
         Preview unavailable — either the <b>DCIM</b> folder isn't in the same directory as this report, or the browser can't render this format (e.g.&nbsp;HEIC).<br>
         <span style="font-family:monospace;font-size:9px;color:var(--dim)">${esc(p.directory ? p.directory+'/'+p.filename : p.filename)}</span>
       </div>
-      <div style="margin-top:3px"><a href="${relPath(p)}" target="_blank" class="coord-link" style="font-size:9px">OPEN FILE ↗</a></div>
+      <div style="margin-top:3px"><a href="#" onclick="expandMedia('${relPath(p)}');return false" class="coord-link" style="font-size:9px">OPEN FILE ↗</a></div>
     </div>` : ''}
 
     <div class="section-head">METADATA</div>

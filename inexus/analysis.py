@@ -1,8 +1,9 @@
 """
 Cross-source correlation and geospatial analysis: merging Cache.sqlite +
-Cloud-V2.sqlite location results into one place list, clustering visits
-into stays, and correlating any timestamped artifact (photos, app
-sessions, messages, calls, interactions) against the GPS ping stream.
+Local.sqlite + Cloud-V2.sqlite location results into one place list,
+clustering visits into stays, and correlating any timestamped artifact
+(photos, app sessions, messages, calls, interactions) against the GPS
+ping stream.
 """
 from collections import defaultdict
 
@@ -12,37 +13,38 @@ from .constants import (
 )
 from .utils import haversine, centroid
 
-def merge_location_sources(cache_result, cloud_result):
+
+def merge_location_sources(*source_results):
     """
-    Combine a load_cache() result and a load_cloud_v2() result into one
-    unified (pings, visits, trips) tuple, correlating data from both
+    Combine any number of location loader results — e.g. load_cache(),
+    load_local_db(), and load_cloud_v2() — into one unified
+    (pings, visits, trips) tuple, correlating data across all supplied
     databases rather than picking only one.
 
-    - Pings: concatenated (only Cache.sqlite supplies these today, but this
-      stays additive so a future file with its own raw pings is handled too).
-    - Visits: concatenated. Overlapping stops from each source are NOT
-      deduplicated here — cluster_visits() already merges visits that are
-      both spatially close and temporally contiguous into one "place," so a
-      stop recorded by both Cache and Cloud-V2 naturally collapses into a
-      single place there, and that place inherits the Cloud-V2 name/address
-      enrichment automatically (see cluster_visits()'s device_place_name logic).
-    - Trips: concatenated, each still tagged with source_db for traceability.
-
-    If only one source has data (the other file is missing or empty for that
-    category), this is equivalent to using that one source alone — no
-    behavior change for callers that only have one file.
+    - Pings: concatenated and sorted chronologically.
+    - Visits: concatenated and sorted by entry timestamp. Overlapping stops
+      from each source are merged by cluster_visits() into one "place" that
+      records every contributing source in p["source_dbs"] (e.g.,
+      ['cache', 'cloud_v2', 'local']) and inherits place_name/address
+      enrichment from Local.sqlite and Cloud-V2.sqlite automatically.
+    - Trips: concatenated, each tagged with source_db for traceability.
     """
-    cache_pings,  cache_visits,  cache_trips  = cache_result
-    cloud_pings,  cloud_visits,  cloud_trips  = cloud_result
+    combined_pings = []
+    combined_visits = []
+    all_trips = []
 
-    all_pings = sorted(cache_pings + cloud_pings, key=lambda p: p["ts"] or 0)
-    all_visits = sorted(cache_visits + cloud_visits, key=lambda v: v["entry"] or 0)
-    all_trips = cache_trips + cloud_trips   # trips aren't clustered, order doesn't matter downstream
+    for res in source_results:
+        if not res:
+            continue
+        s_pings, s_visits, s_trips = res
+        combined_pings.extend(s_pings)
+        combined_visits.extend(s_visits)
+        all_trips.extend(s_trips)
+
+    all_pings = sorted(combined_pings, key=lambda p: p["ts"] or 0)
+    all_visits = sorted(combined_visits, key=lambda v: v["entry"] or 0)
 
     return all_pings, all_visits, all_trips
-
-
-
 
 
 # ── Clustering visits into "places" ──────────────────────────────────────────
@@ -52,15 +54,16 @@ def merge_location_sources(cache_result, cloud_result):
 # ── Source / origin classification ───────────────────────────────────────────
 # ZIMPORTEDBY enum values observed in Photos.sqlite
 _IMPORTEDBY = {
-    0: ('Unknown',        'Pre-iOS / Unknown'),
-    1: ('Camera Captured','Device Camera'),
-    2: ('Device Library', 'Local Save / Sync'),
-    3: ('Third-Party App','App Import'),
-    5: ('iCloud',         'Cloud Download'),
-    6: ('Cable Transfer', 'iTunes / Finder Sync'),
-    8: ('System Save',    'iOS System'),
-    9: ('Camera Captured','FaceTime / System Camera'),
+    0: ('Unknown',         'Pre-iOS / Unknown'),
+    1: ('Camera Captured', 'Device Camera'),
+    2: ('Device Library',  'Local Save / Sync'),
+    3: ('Third-Party App', 'App Import'),
+    5: ('iCloud',          'Cloud Download'),
+    6: ('Cable Transfer',  'iTunes / Finder Sync'),
+    8: ('System Save',     'iOS System'),
+    9: ('Camera Captured', 'FaceTime / System Camera'),
 }
+
 
 def correlate_app_sessions(sessions, places, pings_sorted,
                             gps_reject_m=DEFAULT_PLACE_GPS_REJECT_M,
@@ -153,7 +156,6 @@ def cluster_visits(visits, radius_m=DEFAULT_CLUSTER_RADIUS_M,
 
     places = []
     for v in visits_sorted:
-        merged = False
         best_place = None
         best_dist  = float("inf")
 
@@ -195,9 +197,9 @@ def cluster_visits(visits, radius_m=DEFAULT_CLUSTER_RADIUS_M,
         p["duration"] = p["exit"] - p["entry"] if p["exit"] else None
         p["n_visits"] = len(p["visits"])
 
-        # Consolidate any Cloud-V2 "learned place" enrichment from constituent
-        # visits. When multiple visits to the same location were merged, prefer
-        # the longest/most specific place_name and address seen among them —
+        # Consolidate any Cloud-V2 / Local.sqlite "learned place" enrichment from
+        # constituent visits. When multiple visits to the same location were merged,
+        # prefer the longest/most specific place_name and address seen among them —
         # this is purely cosmetic and never affects clustering or assignment.
         named = [v for v in p["visits"] if v.get("place_name")]
         if named:
@@ -214,8 +216,8 @@ def cluster_visits(visits, radius_m=DEFAULT_CLUSTER_RADIUS_M,
         p["device_names"] = devices or None
 
         # Which source database(s) contributed to this place — lets the report
-        # show when a stay is corroborated by both Cache.sqlite and Cloud-V2.sqlite
-        # independently, which is stronger evidence than either source alone.
+        # show when a stay is corroborated by Cache.sqlite, Local.sqlite, and/or
+        # Cloud-V2.sqlite independently, which is stronger evidence than one alone.
         p["source_dbs"] = sorted({v.get("source_db", "cache") for v in p["visits"]})
 
     return places
@@ -324,18 +326,13 @@ def assign_photos_to_places(photos, places, pings_sorted,
 
     Populates photo["place_id"], photo["inferred_lat/lng"], photo["location_method"].
     """
-    # Build per-visit windows as well so we can use the tighter individual visit
-    # time boundaries rather than the merged place boundaries alone.
-    # Each entry: (entry_unix, exit_unix, place_id)
     place_windows = []
     for p in places:
         for v in p["visits"]:
             exit_ts = v["exit"] or v["entry"] + 60
             place_windows.append((v["entry"], exit_ts, p["id"]))
-        # Also add the merged place window as a fallback (covers gaps between visits)
         place_windows.append((p["entry"], p["exit"] or p["entry"] + 1, p["id"]))
 
-    # Build a quick lookup: place_id → place dict
     place_by_id = {p["id"]: p for p in places}
 
     for photo in photos:
@@ -363,7 +360,6 @@ def assign_photos_to_places(photos, places, pings_sorted,
         best_pid = None
         if candidate_pids:
             if photo["has_gps"] and photo["lat"] is not None:
-                # Pick the spatially nearest place centroid
                 plat, plng = photo["lat"], photo["lng"]
                 best_dist = float("inf")
                 for pid in candidate_pids:
@@ -372,13 +368,9 @@ def assign_photos_to_places(photos, places, pings_sorted,
                     if d < best_dist:
                         best_dist = d
                         best_pid  = pid
-                # Sanity check: reject if the nearest place is still too far away.
-                # This handles cases where the photo's GPS puts it clearly elsewhere.
                 if best_dist > gps_reject_m:
                     best_pid = None
             else:
-                # No photo GPS — pick the place whose window midpoint is closest
-                # in time to the photo (tightest temporal fit among candidates)
                 best_dt = float("inf")
                 for pid in candidate_pids:
                     p = place_by_id[pid]
@@ -429,6 +421,3 @@ def build_track(pings, max_points=4000):
         return pings
     step = len(pings) // max_points
     return pings[::step]
-
-
-# ── HTML generation ──────────────────────────────────────────────────────────

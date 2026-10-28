@@ -124,15 +124,20 @@ def build_body_html(*, photos, places, pings, app_sessions, messages, calls,
   </div>
 
   <!-- ═══ TIMELINE ═══ -->
-  <div class="view" id="view-timeline" style="flex-direction:column">
-    <div class="filter-bar" style="padding:8px 12px;border-bottom:1px solid var(--border)">
-      <button class="fb-btn active" data-tltype="stay" onclick="toggleTimelineType('stay',this)">📍 STAYS</button>
-      {f'''<button class="fb-btn active" data-tltype="photo" onclick="toggleTimelineType('photo',this)">📷 PHOTOS</button>''' if photos else ''}
-      {f'''<button class="fb-btn active" data-tltype="message" onclick="toggleTimelineType('message',this)">💬 MESSAGES</button>''' if messages else ''}
-      {f'''<button class="fb-btn active" data-tltype="call" onclick="toggleTimelineType('call',this)">📞 CALLS</button>''' if calls else ''}
-      {f'''<button class="fb-btn" data-tltype="interaction" onclick="toggleTimelineType('interaction',this)">🔄 INTERACTIONS ({len(interactions)})</button>''' if interactions else ''}
+  <div class="view" id="view-timeline" style="flex-direction:row">
+    <div class="sidebar" id="timeline-sidebar" style="width:400px">
+      <div class="filter-bar" style="padding:8px 12px;border-bottom:1px solid var(--border)">
+        <button class="fb-btn active" data-tltype="stay" onclick="toggleTimelineType('stay',this)">📍 STAYS</button>
+        {f'''<button class="fb-btn active" data-tltype="photo" onclick="toggleTimelineType('photo',this)">📷 PHOTOS</button>''' if photos else ''}
+        {f'''<button class="fb-btn active" data-tltype="message" onclick="toggleTimelineType('message',this)">💬 MESSAGES</button>''' if messages else ''}
+        {f'''<button class="fb-btn active" data-tltype="call" onclick="toggleTimelineType('call',this)">📞 CALLS</button>''' if calls else ''}
+        {f'''<button class="fb-btn" data-tltype="interaction" onclick="toggleTimelineType('interaction',this)">🔄 INTERACTIONS ({len(interactions)})</button>''' if interactions else ''}
+      </div>
+      <div class="sidebar-body" id="timeline-wrap" style="padding:12px"></div>
     </div>
-    <div id="timeline-wrap" id="tl-body"></div>
+    <div class="detail-panel" id="timeline-detail">
+      <div style="color:var(--dim);font-size:11px;margin-top:40px;text-align:center">← Select an event on the timeline to view details</div>
+    </div>
   </div>
 
   <!-- ═══ PHOTOS ═══ -->

@@ -1,5 +1,8 @@
 """Load and classify photo/video assets from Photos.sqlite."""
 import math
+import os
+import glob
+import base64
 
 from ..db import _open_sqlite_or_die
 from ..utils import apple_ts, unix_ts
@@ -30,12 +33,12 @@ def classify_asset_source(asset):
     subcategory = ''
     confidence  = 'high'
 
-    # Screenshots — ZKINDSUBTYPE=2 is definitive
+    # HDR Photos (ZKINDSUBTYPE = 2)
     if kindsubtype == 2:
-        category    = 'Screenshot'
-        subcategory = 'Screen Capture'
+        category    = 'Camera Captured'
+        subcategory = 'HDR Photo'
 
-    # Live Photos from camera or SpringBoard
+    # Live Photos (ZKINDSUBTYPE = 10)
     elif kindsubtype == 10:
         if importedby == 8 and bundle == 'com.apple.springboard':
             category    = 'Screenshot'
@@ -110,7 +113,7 @@ def classify_asset_source(asset):
     }
 
 
-def load_photos(path):
+def load_photos(path, thumbnails_dir=None):
     conn, cur = _open_sqlite_or_die(path)
 
     # Check available columns
@@ -247,6 +250,75 @@ def load_photos(path):
             "source_display_name": source_info["display_name"],
             "source_confidence":   source_info["confidence"],
         })
+
+    # 1. Map existing SQLite photos by their true stem to allow merging
+    existing_by_stem = {}
+    for p in photos:
+        if p.get("filename"):
+            base = os.path.basename(p["filename"])
+            stem = os.path.splitext(base)[0].lower()
+            if stem not in existing_by_stem:
+                existing_by_stem[stem] = []
+            existing_by_stem[stem].append(p)
+
+    if thumbnails_dir and os.path.isdir(thumbnails_dir):
+        import glob, base64
+        search_pattern = os.path.join(thumbnails_dir, "**", "*.jpg")
+        for thumb_path in glob.iglob(search_pattern, recursive=True):
+            parts = os.path.normpath(thumb_path).split(os.sep)
+            if len(parts) >= 3:
+                parent_folder = parts[-2]
+                
+                if parent_folder.upper().endswith("APPLE"):
+                    continue
+
+                # Strip any extensions off the parent folder (e.g. IMG_6631.HEIC -> img_6631)
+                stem_guess = os.path.splitext(parent_folder)[0].lower()
+                
+                thumb_data_uri = None
+                try:
+                    with open(thumb_path, "rb") as tf:
+                        encoded = base64.b64encode(tf.read()).decode("utf-8")
+                        thumb_data_uri = f"data:image/jpeg;base64,{encoded}"
+                except Exception:
+                    continue
+
+                if stem_guess in existing_by_stem:
+                    # MERGE: The photo exists in SQLite (has GPS!). Attach the V2 thumbnail as a fallback.
+                    for existing_photo in existing_by_stem[stem_guess]:
+                        if not existing_photo.get("thumbnail_data_uri"):
+                            existing_photo["thumbnail_data_uri"] = thumb_data_uri
+                else:
+                    # ORPHAN: Truly missing from SQLite. Add as a standalone thumbnail.
+                    stat = os.stat(thumb_path)
+                    mtime = stat.st_mtime
+                    photos.append({
+                        "id":           900000 + len(photos),
+                        "filename":     parent_folder + ".jpg",
+                        "directory":    "__v2_thumbs__",
+                        "ts":           apple_ts(mtime - 978307200),
+                        "unix_ts":      mtime,
+                        "lat":          None,
+                        "lng":          None,
+                        "has_gps":      False,
+                        "kind":         0,
+                        "uti":          "public.jpeg",
+                        "trashed":      False,
+                        "w":            None,
+                        "h":            None,
+                        "duration":     0,
+                        "importedby":   0,
+                        "source_category": "Thumbnail Cache",
+                        "source_subcategory": "Unindexed (V2)",
+                        "source_bundle_id": None,
+                        "source_display_name": "PhotoData Thumbnails",
+                        "source_confidence": "high",
+                        "location_method": "unknown",
+                        "thumbnail_data_uri": thumb_data_uri,
+                        "is_thumbnail_orphan": True,
+                    })
+
+    photos.sort(key=lambda x: (x.get("filename") or "").lower())
     conn.close()
     return photos
 

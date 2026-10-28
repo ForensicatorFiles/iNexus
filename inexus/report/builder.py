@@ -73,7 +73,7 @@ def build_html(photos, places, unplaced, pings, trips, photos_db_path, cache_db_
                 app_sessions=None, knowledgec_db_path=None, messages=None, sms_db_path=None,
                 calls=None, calls_db_path=None, addressbook_db_path=None,
                 interactions=None, interactions_db_path=None, heic_map=None,
-                wal_sources=None, recovered_data=None):
+                wal_sources=None, recovered_data=None, carto_api_key=None):
     """
     run_params         : dict of the actual parameter values used for this run
                           (radius_m, time_gap_hours, interp_window_secs, gps_reject_m,
@@ -199,6 +199,7 @@ def build_html(photos, places, unplaced, pings, trips, photos_db_path, cache_db_
         "src_app":   p.get("source_display_name"),
         "src_conf":  p.get("source_confidence",  "low"),
         "importedby":p.get("importedby"),
+        "thumbnail_data_uri": p.get("thumbnail_data_uri"),
     } for p in photos], default=str)
 
     track_json = json.dumps([[round(p["lat"],6), round(p["lng"],6)] for p in track])
@@ -339,6 +340,7 @@ def build_html(photos, places, unplaced, pings, trips, photos_db_path, cache_db_
         knowledgec_db_path=knowledgec_db_path, sms_db_path=sms_db_path,
         calls_db_path=calls_db_path, addressbook_db_path=addressbook_db_path,
         interactions_db_path=interactions_db_path, run_params=run_params,
+        carto_api_key=carto_api_key,
     )
 
     html = f"""<!DOCTYPE html>

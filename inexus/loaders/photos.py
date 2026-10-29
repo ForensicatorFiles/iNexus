@@ -9,78 +9,22 @@ from ..utils import apple_ts, unix_ts
 from ..classification import categorize_bundle_id
 
 def classify_asset_source(asset):
-    """
-    Determine how an asset arrived on the device.
-
-    Returns a dict with:
-      category    – high-level origin (Camera Captured, Screenshot, Messaging App, …)
-      subcategory – detail label (Signal, AirDrop, iMessage / SMS, …)
-      bundle_id   – raw bundle identifier, if any
-      display_name– app display name, if any
-      imported_by – raw ZIMPORTEDBY integer
-      confidence  – 'high' | 'medium' | 'low'
-    """
-    importedby     = asset.get('importedby')     or 0
-    bundle         = asset.get('imported_bundle') or ''
-    display        = asset.get('imported_by')     or ''
-    kindsubtype    = asset.get('kind_subtype')    or 0
-    bundlescope    = asset.get('bundle_scope')    or 0
-    savedassettype = asset.get('saved_asset_type')or 0
-    is_mine        = asset.get('is_mine')
-    dup_id         = asset.get('source_dup_id')
+    kindsubtype = asset.get('kind_subtype')
+    bundlescope = asset.get('bundle_scope')
+    savedassettype = asset.get('saved_asset_type')
+    importedby = asset.get('importedby')
+    bundle = asset.get('imported_bundle')
+    bundle_display = asset.get('imported_by')
+    original_filename = asset.get('original_filename')
+    is_mine = asset.get('is_mine')
+    original_filename = asset.get('original_filename')
 
     category    = 'Unknown'
     subcategory = ''
     confidence  = 'high'
 
-    # HDR Photos (ZKINDSUBTYPE = 2)
-    if kindsubtype == 2:
-        category    = 'Camera Captured'
-        subcategory = 'HDR Photo'
-
-    # Live Photos (ZKINDSUBTYPE = 10)
-    elif kindsubtype == 10:
-        if importedby == 8 and bundle == 'com.apple.springboard':
-            category    = 'Screenshot'
-            subcategory = 'Live Screenshot'
-        else:
-            category    = 'Camera Captured'
-            subcategory = 'Live Photo'
-
-    # Shared/syndicated albums
-    elif bundlescope == 2 or savedassettype == 4:
-        category    = 'Shared Album'
-        subcategory = 'iCloud Shared' if is_mine else 'Received Share'
-
-    # Third-party app import
-    elif importedby == 3:
-        category, subcategory, cat_confidence = categorize_bundle_id(bundle, display)
-        if category == 'Unknown App':
-            category    = 'Third-Party App'
-            subcategory = 'Unknown App'
-            confidence  = 'medium'
-        else:
-            confidence = cat_confidence
-
-    # System-level saves (importedby=8)
-    elif importedby == 8:
-        if bundle == 'com.apple.springboard':
-            category    = 'Screenshot'
-            subcategory = 'SpringBoard'
-        elif bundle == 'com.apple.MobileSMS':
-            category    = 'Messaging App'
-            subcategory = 'iMessage / SMS'
-        elif bundle == 'com.apple.sharingd':
-            category    = 'Received File'
-            subcategory = 'AirDrop'
-        elif bundle == 'com.apple.mobilemail':
-            category    = 'Email Attachment'
-            subcategory = 'Apple Mail'
-        else:
-            category    = 'System Save'
-            subcategory = display or bundle or 'iOS System'
-
-    elif importedby == 1:
+    # 1. HIGHEST PRIORITY: Explicit Import Mechanisms
+    if importedby == 1:
         category    = 'Camera Captured'
         subcategory = 'Device Camera'
 
@@ -100,16 +44,58 @@ def classify_asset_source(asset):
         category    = 'Camera Captured'
         subcategory = 'FaceTime Capture'
 
-    if dup_id:
-        subcategory = (subcategory + ' (Duplicate)').strip()
+    # 2. APP IMPORTS & AIRDROP (Flags 8, 13)
+    elif importedby in (8, 13):
+        if bundle == 'com.apple.springboard':
+            category    = 'Screenshot'
+            subcategory = 'Hardware Capture'
+        elif bundle == 'com.apple.sharingd':
+            category    = 'AirDrop'
+            # Inject the original filename if it exists
+            if original_filename:
+                subcategory = f'Received (sharingd) [{original_filename}]'
+            else:
+                subcategory = 'Received (sharingd)'
+        elif bundle == 'com.apple.mobilesms':
+            category    = 'Messages'
+            subcategory = 'Saved from iMessage/SMS'
+        else:
+            category    = 'Third-Party App'
+            subcategory = bundle_display or bundle or f'App Import (Flag {importedby})'
 
+    # 3. SHARED ALBUMS & SYNDICATION
+    elif bundlescope == 2 or savedassettype == 4:
+        category    = 'Shared Album'
+        subcategory = 'iCloud Shared' if is_mine else 'Received Share'
+
+    # 4. NATIVE CAMERA METADATA (Fallback for Native Captures)
+    elif kindsubtype == 2:
+        category    = 'Camera Captured'
+        subcategory = 'HDR Photo'
+
+    elif kindsubtype == 10:
+        category    = 'Camera Captured'
+        subcategory = 'Live Photo'
+
+    # 5. DEFAULT: Standard Native Camera
+    elif not importedby and not bundle:
+        category    = 'Camera Captured'
+        subcategory = 'Standard Photo'
+
+    # Fallback for anything completely unrecognized
+    else:
+        if bundle:
+            category = 'Other App'
+            subcategory = bundle_display or bundle
+        else:
+            confidence = 'low'
+            
     return {
-        'category':     category,
-        'subcategory':  subcategory,
-        'bundle_id':    bundle or None,
-        'display_name': display or None,
-        'imported_by':  importedby,
-        'confidence':   confidence,
+        "category": category,
+        "subcategory": subcategory,
+        "bundle_id": bundle,
+        "display_name": bundle_display,
+        "confidence": confidence
     }
 
 
@@ -167,6 +153,7 @@ def load_photos(path, thumbnails_dir=None):
         _col("aa", "ZIMPORTEDBYDISPLAYNAME",            "imported_by"),
         _col("aa", "ZDATECREATEDSOURCE",                "date_created_source"),
         _col("aa", "ZSOURCEASSETFORDUPLICATIONIDENTIFIER","source_dup_id"),
+        # _col("aa", "ZORIGINALFILENAME",                 "original_filename"),
     ])
 
     cur.execute(f"""
@@ -184,6 +171,7 @@ def load_photos(path, thumbnails_dir=None):
             a.ZWIDTH        as w,
             a.ZHEIGHT       as h,
             a.ZDURATION     as dur,
+            aa.ZORIGINALFILENAME AS original_filename,
             {moment_cols},
             {exif_cols},
             {src_cols}
@@ -217,6 +205,7 @@ def load_photos(path, thumbnails_dir=None):
             "saved_asset_type":d.get("savedassettype") or 0,
             "is_mine":         d.get("is_mine"),
             "source_dup_id":   d.get("source_dup_id"),
+            "original_filename": d.get("original_filename"),
         }
         source_info = classify_asset_source(asset_for_classification)
 
@@ -243,6 +232,7 @@ def load_photos(path, thumbnails_dir=None):
             "bundle_scope":        d.get("bundlescope") or 0,
             "saved_asset_type":    d.get("savedassettype") or 0,
             "date_created_source": d.get("date_created_source"),
+            "original_filename":   d.get("original_filename"),
             # Classified origin
             "source_category":     source_info["category"],
             "source_subcategory":  source_info["subcategory"],
@@ -321,5 +311,3 @@ def load_photos(path, thumbnails_dir=None):
     photos.sort(key=lambda x: (x.get("filename") or "").lower())
     conn.close()
     return photos
-
-

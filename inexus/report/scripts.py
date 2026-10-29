@@ -206,9 +206,12 @@ function sourcePill(p) {
     'System Save':      '⚙️',
     'Device Library':   '📂',
     'Apple System App': '🍎',
+    'AirDrop':          '📡',   // explicitly mapped AirDrop icon
+    'Other App':        '👾',   // fallback for unrecognized bundles
     'Unknown':          '❓',
     'Unknown App':      '❓',
   };
+  
   const colors = {
     'Camera Captured':  '#3dd68c',
     'Screenshot':       '#40c8c8',
@@ -224,15 +227,34 @@ function sourcePill(p) {
     'System Save':      '#768390',
     'Device Library':   '#4a90d9',
     'Apple System App': '#768390',
+    'AirDrop':          '#4a90d9',   // explicitly mapped AirDrop color
+    'Other App':        '#e07b40',
     'Unknown':          '#768390',
     'Unknown App':      '#768390',
   };
-  // Accepts either a photo object (src_cat/src_sub) or an app-session
-  // object (category/subcategory) — same taxonomy, different field names.
-  const cat = p.src_cat || p.category || 'Unknown';
-  const sub = p.src_sub || p.subcategory || '';
-  const icon = icons[cat] || '❓';
-  const color = colors[cat] || '#768390';
+
+  const cat = p.source_category || p.src_cat || p.category || 'Unknown';
+  const sub = p.source_subcategory || p.src_sub || p.subcategory || '';
+  let icon = icons[cat] || '❓';
+  let color = colors[cat] || '#768390';
+
+  // Dynamic overrides based on the app name or bundle ID in the subcategory
+  const subText = sub.toLowerCase();
+  if (subText.includes('snapchat') || subText.includes('picaboo')) {
+    icon = '👻';
+    color = '#e0d840'; // Snapchat Yellow
+  } else if (subText.includes('instagram') || subText.includes('burbn')) {
+    icon = '📸';
+    color = '#d94a8c'; // Instagram Pink/Magenta
+  } else if (subText.includes('whatsapp')) {
+    icon = '💬';
+    color = '#4ad97a'; // WhatsApp Green
+  } else if (subText.includes('tiktok')) {
+    icon = '🎵';
+  } else if (subText.includes('facebook')) {
+    icon = '📘';
+  }
+
   const label = sub ? cat + ' · ' + sub : cat;
   return `<span style="background:${color}22;border:1px solid ${color}55;color:${color};padding:1px 6px;border-radius:3px;font-size:9px;white-space:nowrap">${icon} ${esc(label)}</span>`;
 }
@@ -691,10 +713,11 @@ function renderPlaceDetail(id) {
   const rowsHtml = photos.length === 0
     ? '<p style="color:var(--dim);font-size:10px">No photos assigned to this stay.</p>'
     : `<table class="photo-table">
-        <tr><th>#</th><th>FILENAME</th><th>TIMESTAMP</th><th>LOCATION METHOD</th><th>SIZE</th><th></th></tr>
+        <tr><th>#</th><th>FILENAME</th><th>ORIGIN</th><th>TIMESTAMP</th><th>LOCATION METHOD</th><th>SIZE</th><th></th></tr>
         ${photos.map((ph,i) => `<tr class="${ph.trashed?'trashed':''} photo-link-row" onclick="goToPhoto(${ph.id})" title="Click to view this photo's detail">
           <td style="color:var(--dim)">${i+1}</td>
           <td>${esc(ph.filename)}${ph.trashed?' <span class="trash-pill">TRASH</span>':''}</td>
+          <td>${sourcePill(ph)}</td>
           <td style="white-space:nowrap;font-size:9px">${fmtTs(ph.ts)}</td>
           <td>${methodPill(ph.method)}</td>
           <td style="color:var(--dim)">${ph.w&&ph.h ? ph.w+'×'+ph.h : '—'}</td>
@@ -816,6 +839,7 @@ function renderPlaceDetail(id) {
 // Doesn't touch the network: uses whatever name is already resolved
 // (resolvePlace already ran when this stay's detail was opened), and falls
 // back to raw coordinates if a name was never resolved.
+
 function exportStayReport(id) {
   const p = PLACES.find(x => x.id===id);
   if (!p) return;
@@ -834,9 +858,11 @@ function exportStayReport(id) {
 
   const photoRows = photos.length === 0
     ? '<p style="color:#666;font-size:11px">No photos assigned to this stay.</p>'
-    : `<table><tr><th>#</th><th>Filename</th><th>Timestamp</th><th>Location Method</th><th>Size</th><th>Status</th></tr>
+    : `<table><tr><th>#</th><th>Filename</th><th>Origin</th><th>Timestamp</th><th>Location Method</th><th>Size</th><th>Status</th></tr>
         ${photos.map((ph,i) => `<tr>
-          <td>${i+1}</td><td>${esc(ph.filename)}</td><td>${fmtTs(ph.ts)}</td>
+          <td>${i+1}</td><td>${esc(ph.filename)}</td>
+          <td>${sourcePill(ph)}</td>
+          <td>${fmtTs(ph.ts)}</td>
           <td>${esc(ph.method||'—')}</td><td>${ph.w&&ph.h?ph.w+'×'+ph.h:'—'}</td>
           <td>${ph.trashed?'TRASHED':'Active'}</td>
         </tr>`).join('')}
@@ -1314,11 +1340,11 @@ function selectPhoto(id) {
     <div class="section-head">ORIGIN / SOURCE</div>
     <table style="width:100%;font-size:10px;border-collapse:collapse">
       ${row('CLASSIFICATION', sourcePill(p))}
-      ${row('CATEGORY', p.src_cat || '—')}
-      ${row('SOURCE APP', p.src_sub || '—')}
-      ${p.src_bundle ? row('BUNDLE ID', `<span style="font-family:monospace;font-size:9px;color:var(--dim)">${esc(p.src_bundle)}</span>`) : ''}
+      ${row('CATEGORY', p.source_category || p.src_cat || '—')}
+      ${row('SOURCE APP', p.source_subcategory || p.src_sub || '—')}
+      ${(p.source_bundle_id || p.src_bundle) ? row('BUNDLE ID', `<span style="font-family:monospace;font-size:9px;color:var(--dim)">${esc(p.source_bundle_id || p.src_bundle)}</span>`) : ''}
       ${row('ZIMPORTEDBY', p.importedby != null ? String(p.importedby) : '—')}
-      ${row('CONFIDENCE', p.src_conf || '—')}
+      ${row('CONFIDENCE', p.source_confidence || p.src_conf || '—')}
     </table>
 
     <div class="section-head">LOCATION</div>

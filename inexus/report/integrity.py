@@ -38,10 +38,16 @@ def build_integrity_html(*, run_params, file_hashes, case_info,
                 f'<td class="val {cls}">{value}{unit}{flag}</td></tr>')
 
     radius_m       = run_params.get("radius_m", DEFAULT_CLUSTER_RADIUS_M)
-    gap_hours       = run_params.get("time_gap_hours", DEFAULT_CLUSTER_TIME_GAP_HRS)
+    gap_hours      = run_params.get("time_gap_hours", DEFAULT_CLUSTER_TIME_GAP_HRS)
     window_secs    = run_params.get("interp_window_secs", DEFAULT_INTERP_WINDOW_SECS)
     reject_m       = run_params.get("gps_reject_m", DEFAULT_PLACE_GPS_REJECT_M)
     min_stay       = run_params.get("min_stay_minutes", DEFAULT_MIN_STAY_MINUTES)
+
+    start_date     = run_params.get("start_date")
+    end_date       = run_params.get("end_date")
+    date_row       = ""
+    if start_date or end_date:
+        date_row = f'<tr><td class="lbl">Date Range Filter</td><td class="val param-overridden">{start_date or "Beginning of record"} to {end_date or "End of record"}</td></tr>'
 
     return f"""
     <div id="integrity-overlay">
@@ -81,6 +87,7 @@ def build_integrity_html(*, run_params, file_hashes, case_info,
 
     <h3>Analysis Parameters Used For This Run</h3>
     <table>
+      {date_row}
       {_param_row("Clustering radius (-radius)", radius_m, radius_m == DEFAULT_CLUSTER_RADIUS_M, " m")}
       {_param_row("Visit merge gap (-visit)", gap_hours, gap_hours == DEFAULT_CLUSTER_TIME_GAP_HRS, " hours")}
       {_param_row("GPS interpolation window (-window)", window_secs, window_secs == DEFAULT_INTERP_WINDOW_SECS, " sec")}

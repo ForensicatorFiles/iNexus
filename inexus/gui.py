@@ -21,7 +21,7 @@ from .constants import (
 # Standard filenames (and flattened extraction-tool aliases) to look for during Auto-Scan
 _SOURCE_SPECS = [
     ("cache_db",     "Cache.sqlite",          "Location Track & Visits",               ["cache.sqlite", "cache__com.apple.routined.sqlite"]),
-    ("local",        "Local.sqlite",          "Routined Learned Visits / LOIs",        ["local.sqlite"]),
+    ("local",        "Local.sqlite",          "Routined Learned Visits / LOIs",        ["local.sqlite", "Local__com.apple.routined.sqlite"]),
     ("cloud",        "Cloud-V2.sqlite",       "iCloud Synced Places & Visits",         ["cloud-v2.sqlite", "cloud.sqlite"]),
     ("photos",       "Photos.sqlite",         "Photo/Video Assets",                    ["photos.sqlite", "photos__photodata.sqlite"]),
     ("knowledgec",   "knowledgeC.db",         "App Foreground/Background Usage",       ["knowledgec.db"]),
@@ -230,6 +230,8 @@ class iNexusGUI:
         self.window_var = tk.DoubleVar(value=DEFAULT_INTERP_WINDOW_SECS)
         self.reject_var = tk.DoubleVar(value=DEFAULT_PLACE_GPS_REJECT_M)
         self.minstay_var = tk.DoubleVar(value=DEFAULT_MIN_STAY_MINUTES)
+        self.start_date_var = tk.StringVar(value="")
+        self.end_date_var = tk.StringVar(value="")
 
         self._add_param_row(param_card, 1, "Cluster Radius (m):", self.radius_var)
         self._add_param_row(param_card, 2, "Visit Merge Gap (hrs):", self.visit_var)
@@ -237,6 +239,8 @@ class iNexusGUI:
         self._add_param_row(param_card, 4, "GPS Reject Dist (m):", self.reject_var)
         self._add_param_row(param_card, 5, "Min Stay Duration (min):", self.minstay_var)
         self._add_param_row(param_card, 6, "HEIC JPEG Quality (1-100):", self.jpeg_q_var)
+        self._add_param_row(param_card, 7, "Start Date (YYYY-MM-DD):", self.start_date_var)
+        self._add_param_row(param_card, 8, "End Date (YYYY-MM-DD):", self.end_date_var)
 
         # 3. Action Bar & Console Log
         action_bar = ttk.Frame(main_frame, padding=(0, 4))
@@ -410,6 +414,8 @@ class iNexusGUI:
         ns.reject = float(self.reject_var.get())
         ns.minstay = float(self.minstay_var.get())
         ns.gui = True
+        ns.start_date = self.start_date_var.get().strip() or None
+        ns.end_date = self.end_date_var.get().strip() or None
         return ns
 
     def _start_run(self):

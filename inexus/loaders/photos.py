@@ -241,30 +241,50 @@ def load_photos(path, thumbnails_dir=None):
             "source_confidence":   source_info["confidence"],
         })
 
-    # 1. Map existing SQLite photos by their true stem to allow merging
-    existing_by_stem = {}
+    # 1. Map existing SQLite photos by multiple keys for bulletproof matching
+    existing_by_stem = {}       # e.g., 'img_1504'
+    existing_by_fn = {}         # e.g., 'img_1504.heic'
+    existing_by_dir_fn = {}     # e.g., '151apple/img_1504.heic'
+
     for p in photos:
         if p.get("filename"):
-            base = os.path.basename(p["filename"])
-            stem = os.path.splitext(base)[0].lower()
-            if stem not in existing_by_stem:
-                existing_by_stem[stem] = []
-            existing_by_stem[stem].append(p)
+            fn = p["filename"].lower()
+            stem = os.path.splitext(fn)[0]
+            directory = (p.get("directory") or "").strip().lower()
+            
+            existing_by_stem.setdefault(stem, []).append(p)
+            existing_by_fn.setdefault(fn, []).append(p)
+            if directory:
+                existing_by_dir_fn.setdefault(f"{directory}/{fn}", []).append(p)
+                existing_by_dir_fn.setdefault(f"{directory}/{stem}", []).append(p)
 
     if thumbnails_dir and os.path.isdir(thumbnails_dir):
         import glob, base64
         search_pattern = os.path.join(thumbnails_dir, "**", "*.jpg")
         for thumb_path in glob.iglob(search_pattern, recursive=True):
             parts = os.path.normpath(thumb_path).split(os.sep)
-            if len(parts) >= 3:
-                parent_folder = parts[-2]
+            if len(parts) < 2:
+                continue
                 
-                if parent_folder.upper().endswith("APPLE"):
-                    continue
+            # iOS 16+ V2 paths use the full filename as the parent folder
+            parent_folder = parts[-2].lower() # e.g., "img_1504.heic" or "img_1504"
+            apple_dir = parts[-3].lower() if len(parts) >= 3 else "" # e.g., "151apple"
+            stem_guess = os.path.splitext(parent_folder)[0]
+            
+            matched_photos = []
+            
+            # Waterfall matching: highest precision to lowest precision
+            if f"{apple_dir}/{parent_folder}" in existing_by_dir_fn:
+                matched_photos = existing_by_dir_fn[f"{apple_dir}/{parent_folder}"]
+            elif f"{apple_dir}/{stem_guess}" in existing_by_dir_fn:
+                matched_photos = existing_by_dir_fn[f"{apple_dir}/{stem_guess}"]
+            elif parent_folder in existing_by_fn:
+                matched_photos = existing_by_fn[parent_folder]
+            elif stem_guess in existing_by_stem:
+                matched_photos = existing_by_stem[stem_guess]
 
-                # Strip any extensions off the parent folder (e.g. IMG_6631.HEIC -> img_6631)
-                stem_guess = os.path.splitext(parent_folder)[0].lower()
-                
+            if matched_photos:
+                # MERGE: Read the thumbnail and attach it to the EXACT matching SQLite record(s)
                 thumb_data_uri = None
                 try:
                     with open(thumb_path, "rb") as tf:
@@ -272,42 +292,51 @@ def load_photos(path, thumbnails_dir=None):
                         thumb_data_uri = f"data:image/jpeg;base64,{encoded}"
                 except Exception:
                     continue
-
-                if stem_guess in existing_by_stem:
-                    # MERGE: The photo exists in SQLite (has GPS!). Attach the V2 thumbnail as a fallback.
-                    for existing_photo in existing_by_stem[stem_guess]:
+                    
+                if thumb_data_uri:
+                    for existing_photo in matched_photos:
                         if not existing_photo.get("thumbnail_data_uri"):
                             existing_photo["thumbnail_data_uri"] = thumb_data_uri
-                else:
-                    # ORPHAN: Truly missing from SQLite. Add as a standalone thumbnail.
-                    stat = os.stat(thumb_path)
-                    mtime = stat.st_mtime
-                    photos.append({
-                        "id":           900000 + len(photos),
-                        "filename":     parent_folder + ".jpg",
-                        "directory":    "__v2_thumbs__",
-                        "ts":           apple_ts(mtime - 978307200),
-                        "unix_ts":      mtime,
-                        "lat":          None,
-                        "lng":          None,
-                        "has_gps":      False,
-                        "kind":         0,
-                        "uti":          "public.jpeg",
-                        "trashed":      False,
-                        "w":            None,
-                        "h":            None,
-                        "duration":     0,
-                        "importedby":   0,
-                        "source_category": "Thumbnail Cache",
-                        "source_subcategory": "Unindexed (V2)",
-                        "source_bundle_id": None,
-                        "source_display_name": "PhotoData Thumbnails",
-                        "source_confidence": "high",
-                        "location_method": "unknown",
-                        "thumbnail_data_uri": thumb_data_uri,
-                        "is_thumbnail_orphan": True,
-                    })
+            else:
+                # ORPHAN: Truly missing from SQLite, add as standalone V2 artifact
+                stat = os.stat(thumb_path)
+                mtime = stat.st_mtime
+                
+                try:
+                    with open(thumb_path, "rb") as tf:
+                        encoded = base64.b64encode(tf.read()).decode("utf-8")
+                        thumb_data_uri = f"data:image/jpeg;base64,{encoded}"
+                except Exception:
+                    thumb_data_uri = None
+                
+                photos.append({
+                    "id":           900000 + len(photos),
+                    "filename":     parent_folder + ('.jpg' if not parent_folder.endswith('.jpg') else ''),
+                    "directory":    "__v2_thumbs__",
+                    "ts":           apple_ts(mtime - 978307200),
+                    "unix_ts":      mtime,
+                    "lat":          None,
+                    "lng":          None,
+                    "has_gps":      False,
+                    "kind":         0,
+                    "uti":          "public.jpeg",
+                    "trashed":      False,
+                    "w":            None,
+                    "h":            None,
+                    "duration":     0,
+                    "importedby":   0,
+                    "source_category": "Thumbnail Cache",
+                    "source_subcategory": "Unindexed (V2)",
+                    "source_bundle_id": None,
+                    "source_display_name": "PhotoData Thumbnails",
+                    "source_confidence": "high",
+                    "location_method": "unknown",
+                    "thumbnail_data_uri": thumb_data_uri,
+                    "is_thumbnail_orphan": True,
+                })
 
     photos.sort(key=lambda x: (x.get("filename") or "").lower())
     conn.close()
     return photos
+
+

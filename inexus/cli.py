@@ -4,6 +4,7 @@ launcher handoff, and the run pipeline (run_pipeline()) that wires every
 loader/analysis step together and writes the final self-contained HTML report.
 """
 import argparse, os, sys, textwrap
+from datetime import datetime, timezone
 
 from .constants import (
     TOOL_NAME, TOOL_VERSION,
@@ -152,8 +153,36 @@ def parse_args():
                 help="Optional path to the exported PhotoData/Thumbnails/V2 folder. "
                      "When provided, the tool scans for cached thumbnails belonging "
                      "to deleted or unindexed photos and adds them as recovered assets.")
+    p.add_argument("-start", dest="start_date", default=None, metavar="YYYY-MM-DD", help="Start date (UTC)")
+    p.add_argument("-end", dest="end_date", default=None, metavar="YYYY-MM-DD", help="End date (UTC)")
 
     return p.parse_args()
+
+def apply_date_filters(data_list, start_str, end_str, time_key='ts'):
+    """Filters a list of artifact dictionaries based on a target time key."""
+    if not start_str and not end_str:
+        return data_list
+        
+    start_unix = 0
+    end_unix = float('inf')
+    
+    if start_str:
+        dt_start = datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        start_unix = dt_start.timestamp()
+        
+    if end_str:
+        dt_end = datetime.strptime(end_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        end_unix = dt_end.timestamp() + 86399
+        
+    filtered = []
+    for item in data_list:
+        item_time = item.get(time_key)
+        if item_time is None:
+            filtered.append(item) 
+        elif start_unix <= item_time <= end_unix:
+            filtered.append(item)
+            
+    return filtered
 
 
 def run_pipeline(args):
@@ -188,6 +217,8 @@ def run_pipeline(args):
         "interp_window_secs": args.window,
         "gps_reject_m":       args.reject,
         "min_stay_minutes":   args.minstay,
+        "start_date":         getattr(args, "start_date", None), 
+        "end_date":           getattr(args, "end_date", None),   
     }
     overridden = []
     if args.radius  != DEFAULT_CLUSTER_RADIUS_M:     overridden.append(f"-radius={args.radius}m")
@@ -523,6 +554,18 @@ def run_pipeline(args):
             print("      No recoverable rows found — either nothing relevant was ever "
                   "deleted from these files, the freed pages were already reused, or "
                   "(if applicable) the database was VACUUMed since deletion.")
+        step += 1
+
+    # Apply backend time filters before building the HTML
+    sd, ed = getattr(args, "start_date", None), getattr(args, "end_date", None)
+    if sd or ed:
+        print(f"[{step}/{n_steps}] Applying global date filters ({sd or 'Start'} to {ed or 'End'})…")
+        photos = apply_date_filters(photos, sd, ed, time_key='unix_ts')
+        places = apply_date_filters(places, sd, ed, time_key='entry')
+        app_sessions = apply_date_filters(app_sessions, sd, ed, time_key='start')
+        messages = apply_date_filters(messages, sd, ed, time_key='ts')
+        calls = apply_date_filters(calls, sd, ed, time_key='ts')
+        interactions = apply_date_filters(interactions, sd, ed, time_key='ts')
         step += 1
 
     print(f"[{step}/{n_steps}] Generating HTML…")

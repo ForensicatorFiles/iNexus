@@ -931,7 +931,13 @@ function exportStayReport(id) {
     </tr>`).join('');
 
   const rp = m.run_params || {};
+  
+  const dateRow = (rp.start_date || rp.end_date) 
+    ? `<tr><td>Date Range Filter</td><td>${rp.start_date || 'Beginning of record'} to ${rp.end_date || 'End of record'}</td></tr>` 
+    : '';
+
   const paramRows = `
+    ${dateRow}
     <tr><td>Cluster radius</td><td>${rp.radius_m} m</td></tr>
     <tr><td>Visit time-gap</td><td>${rp.time_gap_hours} h</td></tr>
     <tr><td>Interpolation window</td><td>±${rp.interp_window_secs} s</td></tr>
@@ -1268,7 +1274,8 @@ function filterPhotos() {
 
 function getFilteredPhotos() {
   return PHOTOS.filter(p => {
-    if (photoSearch && !p.filename.toLowerCase().includes(photoSearch)) return false;
+    const fullPath = (p.directory ? p.directory + '/' : '') + p.filename;
+    if (photoSearch && !fullPath.toLowerCase().includes(photoSearch)) return false;
     if (photoFilter==='gps') return p.method==='exif-gps';
     if (photoFilter==='inferred') return p.method==='interpolated'||p.method==='nearest-ping';
     if (photoFilter==='unknown') return !p.lat||p.method==='unknown';
@@ -1307,7 +1314,7 @@ function selectPhoto(id) {
     : '<span style="color:var(--dim)">No coordinates available</span>';
 
   function row(lbl, val) {
-    return `<tr><td style="color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
+    return `<tr><td style="width:150px; color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
   }
 
   det.innerHTML = `
@@ -1443,7 +1450,7 @@ function selectAppSession(zpk) {
     : '<span style="color:var(--dim)">No coordinates available</span>';
 
   function row(lbl, val) {
-    return `<tr><td style="color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
+    return `<tr><td style="width:150px; color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
   }
 
   det.innerHTML = `
@@ -1550,7 +1557,7 @@ function selectMessage(id) {
     : '<span style="color:var(--dim)">No coordinates available</span>';
 
   function row(lbl, val) {
-    return `<tr><td style="color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
+    return `<tr><td style="width:150px; color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
   }
 
   det.innerHTML = `
@@ -1674,7 +1681,7 @@ function selectCall(id) {
     : '<span style="color:var(--dim)">No coordinates available</span>';
 
   function row(lbl, val) {
-    return `<tr><td style="color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
+    return `<tr><td style="width:150px; color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
   }
 
   det.innerHTML = `
@@ -1800,7 +1807,7 @@ function selectInteraction(id) {
     : '<span style="color:var(--dim)">No coordinates available</span>';
 
   function row(lbl, val) {
-    return `<tr><td style="color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
+    return `<tr><td style="width:150px; color:var(--dim);padding:4px 8px 4px 0;white-space:nowrap;font-size:9px;letter-spacing:1px">${lbl}</td><td style="padding:4px 0">${val||'—'}</td></tr>`;
   }
 
   det.innerHTML = `
